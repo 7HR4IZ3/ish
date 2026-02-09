@@ -520,6 +520,15 @@
 - (IBAction)pressTab:(id)sender {
     [self pressKey:@"\t"];
 }
+- (IBAction)pressMinus:(id)sender {
+    [self pressKey:@"-"];
+}
+- (IBAction)pressSlash:(id)sender {
+    [self pressKey:@"/"];
+}
+- (IBAction)pressPipe:(id)sender {
+    [self pressKey:@"|"];
+}
 - (void)pressKey:(NSString *)key {
     [self.termView insertText:key];
 }
