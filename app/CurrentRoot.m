@@ -67,7 +67,7 @@ void FsInitialize(void) {
         }
 
         // If no newer value for CURRENT_APK_VERSION, do silent update.
-        if (fs_ish_apk_version >= CURRENT_APK_VERSION)
+        if (fs_ish_apk_version <= CURRENT_APK_VERSION)
             FsUpdateRepositories();
 
         if (currentVersion.intValue > fs_ish_version) {

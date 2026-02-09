@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+#import <UserNotifications/UserNotifications.h>
 #import "AboutViewController.h"
 #import "AppDelegate.h"
 #import "AppGroup.h"
@@ -37,6 +38,7 @@
 
 @property BOOL exiting;
 @property SCNetworkReachabilityRef reachability;
+@property (nonatomic) UIBackgroundTaskIdentifier backgroundTaskIdentifier;
 
 @end
 
@@ -66,10 +68,73 @@ void ReportPanic(const char *message) {
 }
 #endif
 
+
+static NSString *const kBackgroundExecutionStopActionIdentifier = @"ISH_STOP_BACKGROUND_EXECUTION";
+static NSString *const kBackgroundExecutionCategoryIdentifier = @"ISH_BACKGROUND_EXECUTION_CATEGORY";
+static NSString *const kBackgroundExecutionNotificationIdentifier = @"ISH_BACKGROUND_EXECUTION_NOTIFICATION";
 static int bootError;
 static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 
 @implementation AppDelegate
+
+static TerminalViewController *terminalViewControllerFromRoot(UIViewController *rootViewController) {
+    if ([rootViewController isKindOfClass:TerminalViewController.class])
+        return (TerminalViewController *) rootViewController;
+    if ([rootViewController isKindOfClass:UINavigationController.class]) {
+        UIViewController *visibleViewController = ((UINavigationController *) rootViewController).visibleViewController;
+        if ([visibleViewController isKindOfClass:TerminalViewController.class])
+            return (TerminalViewController *) visibleViewController;
+    }
+    return nil;
+}
+
+
+- (void)registerBackgroundExecutionNotificationCategory {
+    UNNotificationAction *stopAction = [UNNotificationAction actionWithIdentifier:kBackgroundExecutionStopActionIdentifier
+                                                                             title:@"Stop Background Execution"
+                                                                           options:UNNotificationActionOptionDestructive];
+    UNNotificationCategory *category = [UNNotificationCategory categoryWithIdentifier:kBackgroundExecutionCategoryIdentifier
+                                                                              actions:@[stopAction]
+                                                                    intentIdentifiers:@[]
+                                                                              options:0];
+    [UNUserNotificationCenter.currentNotificationCenter setNotificationCategories:[NSSet setWithObject:category]];
+    UNUserNotificationCenter.currentNotificationCenter.delegate = self;
+}
+
+- (void)scheduleBackgroundExecutionNotification {
+    UNMutableNotificationContent *content = [UNMutableNotificationContent new];
+    content.title = @"iSH running in background";
+    content.body = @"Tap and choose Stop Background Execution to end running sessions.";
+    content.categoryIdentifier = kBackgroundExecutionCategoryIdentifier;
+    content.sound = UNNotificationSound.defaultSound;
+
+    UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:1 repeats:NO];
+    UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:kBackgroundExecutionNotificationIdentifier
+                                                                          content:content
+                                                                          trigger:trigger];
+    [UNUserNotificationCenter.currentNotificationCenter addNotificationRequest:request withCompletionHandler:nil];
+}
+
+- (void)endBackgroundExecutionIfNeeded {
+    if (self.backgroundTaskIdentifier == UIBackgroundTaskInvalid)
+        return;
+    [UIApplication.sharedApplication endBackgroundTask:self.backgroundTaskIdentifier];
+    self.backgroundTaskIdentifier = UIBackgroundTaskInvalid;
+}
+
+- (void)beginBackgroundExecution {
+    if (self.backgroundTaskIdentifier != UIBackgroundTaskInvalid)
+        return;
+
+    __weak typeof(self) weakSelf = self;
+    self.backgroundTaskIdentifier = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"ish.background.execution" expirationHandler:^{
+        __strong typeof(weakSelf) self = weakSelf;
+        [self endBackgroundExecutionIfNeeded];
+    }];
+
+    if (self.backgroundTaskIdentifier != UIBackgroundTaskInvalid)
+        [self scheduleBackgroundExecutionNotification];
+}
 
 - (int)boot {
 #if !ISH_LINUX
@@ -243,6 +308,7 @@ void SyncHostname(void) {
 }
 
 - (BOOL)application:(UIApplication *)application willFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey,id> *)launchOptions {
+    self.backgroundTaskIdentifier = UIBackgroundTaskInvalid;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
     if ([defaults boolForKey:@"hail mary"]) {
         [defaults removeObjectForKey:kPreferenceBootCommandKey];
@@ -312,6 +378,14 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
     SCNetworkReachabilitySetCallback(self.reachability, NetworkReachabilityCallback, &context);
     SCNetworkReachabilityScheduleWithRunLoop(self.reachability, CFRunLoopGetMain(), kCFRunLoopCommonModes);
 
+    [self registerBackgroundExecutionNotificationCategory];
+    [UNUserNotificationCenter.currentNotificationCenter requestAuthorizationWithOptions:UNAuthorizationOptionAlert|UNAuthorizationOptionSound completionHandler:^(BOOL granted, NSError * _Nullable error) {
+        if (error != nil)
+            NSLog(@"background notification authorization failed: %@", error);
+        else if (!granted)
+            NSLog(@"background notification authorization was denied");
+    }];
+
     if (self.window != nil) {
         // For iOS <13, where the app delegate owns the window instead of the scene
         if ([NSUserDefaults.standardUserDefaults boolForKey:@"recovery"]) {
@@ -321,16 +395,27 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
             self.window.rootViewController = vc;
             return YES;
         }
-        TerminalViewController *vc = (TerminalViewController *) self.window.rootViewController;
-        currentTerminalViewController = vc;
-        [vc startNewSession];
+        TerminalViewController *vc = terminalViewControllerFromRoot(self.window.rootViewController);
+        if (vc != nil) {
+            currentTerminalViewController = vc;
+            [vc startNewSession];
+        }
     }
     return YES;
 }
 
 - (void)application:(UIApplication *)application didDiscardSceneSessions:(NSSet<UISceneSession *> *)sceneSessions API_AVAILABLE(ios(13.0)) {
     for (UISceneSession *sceneSession in sceneSessions) {
-        NSString *terminalUUID = sceneSession.stateRestorationActivity.userInfo[@"TerminalUUID"];
+        NSDictionary *userInfo = sceneSession.stateRestorationActivity.userInfo;
+        NSArray<NSString *> *terminalUUIDs = userInfo[@"TerminalUUIDs"];
+        if ([terminalUUIDs isKindOfClass:NSArray.class] && terminalUUIDs.count > 0) {
+            for (NSString *terminalUUID in terminalUUIDs) {
+                [[Terminal terminalWithUUID:[[NSUUID alloc] initWithUUIDString:terminalUUID]] destroy];
+            }
+            continue;
+        }
+
+        NSString *terminalUUID = userInfo[@"TerminalUUID"];
         [[Terminal terminalWithUUID:[[NSUUID alloc] initWithUUIDString:terminalUUID]] destroy];
     }
 }
@@ -349,8 +434,27 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
 }
 
 - (void)applicationDidEnterBackground:(UIApplication *)application {
-    if (self.exiting)
+    if (self.exiting) {
         exit(0);
+    }
+    [self beginBackgroundExecution];
+}
+
+- (void)applicationWillEnterForeground:(UIApplication *)application {
+    [self endBackgroundExecutionIfNeeded];
+    [UNUserNotificationCenter.currentNotificationCenter removeDeliveredNotificationsWithIdentifiers:@[kBackgroundExecutionNotificationIdentifier]];
+    [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[kBackgroundExecutionNotificationIdentifier]];
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter *)center
+didReceiveNotificationResponse:(UNNotificationResponse *)response
+         withCompletionHandler:(void (^)(void))completionHandler {
+    if ([response.actionIdentifier isEqualToString:kBackgroundExecutionStopActionIdentifier]) {
+        [self endBackgroundExecutionIfNeeded];
+        [UNUserNotificationCenter.currentNotificationCenter removeDeliveredNotificationsWithIdentifiers:@[kBackgroundExecutionNotificationIdentifier]];
+        [UNUserNotificationCenter.currentNotificationCenter removePendingNotificationRequestsWithIdentifiers:@[kBackgroundExecutionNotificationIdentifier]];
+    }
+    completionHandler();
 }
 
 @end

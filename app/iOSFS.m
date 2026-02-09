@@ -17,6 +17,39 @@
 
 const NSFileCoordinatorWritingOptions NSFileCoordinatorWritingForCreating = NSFileCoordinatorWritingForMerging;
 
+static TerminalViewController *activeTerminalViewController(void) {
+    TerminalViewController *(^terminalViewControllerFromRoot)(UIViewController *) = ^TerminalViewController *(UIViewController *root) {
+        if ([root isKindOfClass:TerminalViewController.class])
+            return (TerminalViewController *) root;
+        if ([root isKindOfClass:UINavigationController.class]) {
+            UIViewController *visible = ((UINavigationController *) root).visibleViewController;
+            if ([visible isKindOfClass:TerminalViewController.class])
+                return (TerminalViewController *) visible;
+        }
+        return nil;
+    };
+
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if (![scene isKindOfClass:UIWindowScene.class])
+                continue;
+            UIWindowScene *windowScene = (UIWindowScene *) scene;
+            if (windowScene.activationState != UISceneActivationStateForegroundActive)
+                continue;
+            for (UIWindow *window in windowScene.windows) {
+                if (!window.isKeyWindow)
+                    continue;
+                UIViewController *root = window.rootViewController;
+                TerminalViewController *terminalViewController = terminalViewControllerFromRoot(root);
+                if (terminalViewController != nil)
+                    return terminalViewController;
+            }
+        }
+    }
+    return terminalViewControllerFromRoot(currentTerminalViewController);
+}
+
+
 @interface DirectoryPicker : NSObject <UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate>
 
 @property NSArray<NSURL *> *urls;
@@ -40,7 +73,7 @@ const NSFileCoordinatorWritingOptions NSFileCoordinatorWritingForCreating = NSFi
 }
 
 - (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
-    [self documentPickerWasCancelled:(UIDocumentPickerViewController *)presentationController];
+    [self documentPicker:nil didPickDocumentsAtURLs:@[]];
 }
 
 - (void)documentPicker:(UIDocumentPickerViewController *)controller didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
@@ -51,7 +84,7 @@ const NSFileCoordinatorWritingOptions NSFileCoordinatorWritingForCreating = NSFi
 }
 
 - (int)askForURL:(NSURL **)url {
-    TerminalViewController *terminalViewController = currentTerminalViewController;
+    TerminalViewController *terminalViewController = activeTerminalViewController();
     if (!terminalViewController)
         return _ENODEV;
 

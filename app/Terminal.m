@@ -331,6 +331,7 @@ static NSMapTable<NSUUID *, Terminal *> *terminalsByUUID;
     }
     @synchronized (Terminal.class) {
         [terminals removeObjectForKey:self.terminalsKey];
+        [terminalsByUUID removeObjectForKey:self.uuid];
     }
 }
 

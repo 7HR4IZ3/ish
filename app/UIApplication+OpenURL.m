@@ -10,7 +10,13 @@
 @implementation UIApplication (OpenURL)
 
 + (void)openURL:(NSString *)url {
-    [[self sharedApplication] openURL:[NSURL URLWithString:url] options:@{} completionHandler:nil];
+    NSURL *parsedURL = [NSURL URLWithString:url];
+    if (parsedURL == nil)
+        return;
+    [[self sharedApplication] openURL:parsedURL options:@{} completionHandler:^(BOOL success) {
+        if (!success)
+            NSLog(@"failed to open URL: %@", url);
+    }];
 }
 
 @end

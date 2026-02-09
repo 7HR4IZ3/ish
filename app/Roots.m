@@ -140,11 +140,12 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
         NSString *domain = NSPOSIXErrorDomain;
         if (fs_err.type == ERR_SQLITE)
             domain = @"SQLite";
-        *error = [NSError errorWithDomain:domain
-                                     code:fs_err.code
-                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                [NSString stringWithFormat:@"%s, line %d", fs_err.message, fs_err.line]}];
-        if (fs_err.type == ERR_CANCELLED)
+        if (error != nil)
+            *error = [NSError errorWithDomain:domain
+                                         code:fs_err.code
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    [NSString stringWithFormat:@"%s, line %d", fs_err.message, fs_err.line]}];
+        if (fs_err.type == ERR_CANCELLED && error != nil)
             *error = nil;
         free(fs_err.message);
         [NSFileManager.defaultManager removeItemAtURL:tempDestination error:nil];
@@ -173,10 +174,11 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
         NSString *domain = NSPOSIXErrorDomain;
         if (fs_err.type == ERR_SQLITE)
             domain = @"SQLite";
-        *error = [NSError errorWithDomain:domain
-                                     code:fs_err.code
-                                 userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:fs_err.message]}];
-        if (fs_err.type == ERR_CANCELLED)
+        if (error != nil)
+            *error = [NSError errorWithDomain:domain
+                                         code:fs_err.code
+                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithUTF8String:fs_err.message]}];
+        if (fs_err.type == ERR_CANCELLED && error != nil)
             *error = nil;
         free(fs_err.message);
         return NO;
@@ -186,7 +188,8 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
 
 - (BOOL)destroyRootNamed:(NSString *)name error:(NSError **)error {
     if ([name isEqualToString:self.defaultRoot]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot delete the default filesystem"}];
+        if (error != nil)
+            *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot delete the default filesystem"}];
         return NO;
     }
     NSAssert([self.roots containsObject:name], @"root does not exist: %@", name);
@@ -197,20 +200,24 @@ void root_progress_callback(void *cookie, double progress, const char *message, 
 }
 
 - (BOOL)renameRoot:(NSString *)name toName:(NSString *)newName error:(NSError **)error {
-    if (name.length == 0) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be empty"}];
+    if (newName.length == 0) {
+        if (error != nil)
+            *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be empty"}];
         return NO;
     }
-    if ([name containsString:@"/"]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't contain /"}];
+    if ([newName containsString:@"/"]) {
+        if (error != nil)
+            *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't contain /"}];
         return NO;
     }
-    if ([name isEqualToString:@"."] || [name isEqualToString:@".."]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be . or .."}];
+    if ([newName isEqualToString:@"."] || [newName isEqualToString:@".."]) {
+        if (error != nil)
+            *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Filesystem name can't be . or .."}];
         return NO;
     }
     if ([name isEqualToString:self.defaultRoot]) {
-        *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot rename the default filesystem"}];
+        if (error != nil)
+            *error = [NSError errorWithDomain:@"iSH" code:0 userInfo:@{NSLocalizedDescriptionKey: @"Cannot rename the default filesystem"}];
         return NO;
     }
     NSAssert([self.roots containsObject:name], @"root does not exist: %@", name);
