@@ -39,6 +39,7 @@
 @property (weak, nonatomic) IBOutlet UIButton *tabKey;
 @property (weak, nonatomic) IBOutlet UIButton *controlKey;
 @property (weak, nonatomic) IBOutlet UIButton *escapeKey;
+@property (weak, nonatomic) BarButton *fnKey;
 @property (strong, nonatomic) IBOutletCollection(id) NSArray *barButtons;
 @property (strong, nonatomic) IBOutletCollection(id) NSArray *barControls;
 
@@ -200,14 +201,13 @@
 
 - (void)addExtraKeyboardExtenderButtons {
     NSArray<NSDictionary<NSString *, NSString *> *> *keys = @[
-        @{@"title": @"~", @"key": @"~", @"label": @"Tilde"},
-        @{@"title": @"`", @"key": @"`", @"label": @"Backtick"},
-        @{@"title": @"[", @"key": @"[", @"label": @"Left Bracket"},
-        @{@"title": @"]", @"key": @"]", @"label": @"Right Bracket"},
-        @{@"title": @"{", @"key": @"{", @"label": @"Left Brace"},
-        @{@"title": @"}", @"key": @"}", @"label": @"Right Brace"},
-        @{@"title": @";", @"key": @";", @"label": @"Semicolon"},
-        @{@"title": @"&", @"key": @"&", @"label": @"Ampersand"},
+        @{@"title": @"Fn", @"action": @"fn", @"label": @"Function"},
+        @{@"title": @"PgUp", @"input": @"\x1b[5~", @"label": @"Page Up"},
+        @{@"title": @"PgDn", @"input": @"\x1b[6~", @"label": @"Page Down"},
+        @{@"title": @"Home", @"input": @"\x1b[H", @"label": @"Home"},
+        @{@"title": @"End", @"input": @"\x1b[F", @"label": @"End"},
+        @{@"title": @"Ins", @"input": @"\x1b[2~", @"label": @"Insert"},
+        @{@"title": @"Del", @"input": @"\x1b[3~", @"label": @"Delete"},
     ];
 
     NSInteger spacerIndex = [self.bar.arrangedSubviews indexOfObjectPassingTest:^BOOL(UIView *view, NSUInteger idx, BOOL *stop) {
@@ -225,8 +225,14 @@
         button.titleLabel.font = [UIFont systemFontOfSize:20];
         [button setTitle:entry[@"title"] forState:UIControlStateNormal];
         button.accessibilityLabel = entry[@"label"];
-        [button addTarget:self action:@selector(pressDynamicKey:) forControlEvents:UIControlEventTouchUpInside];
-        objc_setAssociatedObject(button, @selector(pressDynamicKey:), entry[@"key"], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        if ([entry[@"action"] isEqualToString:@"fn"]) {
+            [button addTarget:self action:@selector(pressFn:) forControlEvents:UIControlEventTouchUpInside];
+            button.toggleable = YES;
+            self.fnKey = button;
+        } else {
+            [button addTarget:self action:@selector(pressDynamicKey:) forControlEvents:UIControlEventTouchUpInside];
+            objc_setAssociatedObject(button, @selector(pressDynamicKey:), entry[@"input"], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
 
         [self.bar insertArrangedSubview:button atIndex:spacerIndex++];
         [button.widthAnchor constraintEqualToAnchor:self.infoButton.widthAnchor].active = YES;
@@ -243,6 +249,10 @@
     NSString *key = objc_getAssociatedObject(sender, _cmd);
     if (key != nil)
         [self pressKey:key];
+}
+
+- (IBAction)pressFn:(BarButton *)sender {
+    sender.selected = !sender.selected;
 }
 
 - (void)awakeFromNib {
@@ -634,6 +644,17 @@
 }
     
 - (IBAction)pressArrow:(ArrowBarButton *)sender {
+    if (self.fnKey.selected) {
+        switch (sender.direction) {
+            case ArrowUp: [self pressKey:@"\x1b[5~"]; break;
+            case ArrowDown: [self pressKey:@"\x1b[6~"]; break;
+            case ArrowLeft: [self pressKey:@"\x1b[H"]; break;
+            case ArrowRight: [self pressKey:@"\x1b[F"]; break;
+            case ArrowNone: break;
+        }
+        self.fnKey.selected = NO;
+        return;
+    }
     switch (sender.direction) {
         case ArrowUp: [self pressKey:[self.terminal arrow:'A']]; break;
         case ArrowDown: [self pressKey:[self.terminal arrow:'B']]; break;
