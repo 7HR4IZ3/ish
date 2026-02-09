@@ -50,11 +50,18 @@ static void ios_handle_exit(struct task *task, int code) {
         return;
     // pid should be saved now since task would be freed
     pid_t pid = task->pid;
+    NSString *terminalUUID = nil;
+    if (task->group != NULL && task->group->tty != NULL && task->group->tty->data != NULL) {
+        Terminal *terminal = (__bridge Terminal *) task->group->tty->data;
+        terminalUUID = terminal.uuid.UUIDString;
+    }
     dispatch_async(dispatch_get_main_queue(), ^{
+        NSMutableDictionary *userInfo = [@{@"pid": @(pid),
+                                           @"code": @(code),
+                                           @"terminalUUID": terminalUUID ?: [NSNull null]} mutableCopy];
         [[NSNotificationCenter defaultCenter] postNotificationName:ProcessExitedNotification
                                                             object:nil
-                                                          userInfo:@{@"pid": @(pid),
-                                                                     @"code": @(code)}];
+                                                          userInfo:userInfo];
     });
 }
 
@@ -72,6 +79,7 @@ void ReportPanic(const char *message) {
 static NSString *const kBackgroundExecutionStopActionIdentifier = @"ISH_STOP_BACKGROUND_EXECUTION";
 static NSString *const kBackgroundExecutionCategoryIdentifier = @"ISH_BACKGROUND_EXECUTION_CATEGORY";
 static NSString *const kBackgroundExecutionNotificationIdentifier = @"ISH_BACKGROUND_EXECUTION_NOTIFICATION";
+static NSString *const kBackgroundExecutionNotificationSoundPreferenceKey = @"backgroundExecutionNotificationSoundEnabled";
 static int bootError;
 static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 
@@ -106,7 +114,8 @@ static TerminalViewController *terminalViewControllerFromRoot(UIViewController *
     content.title = @"iSH running in background";
     content.body = @"Tap and choose Stop Background Execution to end running sessions.";
     content.categoryIdentifier = kBackgroundExecutionCategoryIdentifier;
-    content.sound = UNNotificationSound.defaultSound;
+    if ([NSUserDefaults.standardUserDefaults boolForKey:kBackgroundExecutionNotificationSoundPreferenceKey])
+        content.sound = UNNotificationSound.defaultSound;
 
     UNTimeIntervalNotificationTrigger *trigger = [UNTimeIntervalNotificationTrigger triggerWithTimeInterval:1 repeats:NO];
     UNNotificationRequest *request = [UNNotificationRequest requestWithIdentifier:kBackgroundExecutionNotificationIdentifier
@@ -409,14 +418,24 @@ void NetworkReachabilityCallback(SCNetworkReachabilityRef target, SCNetworkReach
         NSDictionary *userInfo = sceneSession.stateRestorationActivity.userInfo;
         NSArray<NSString *> *terminalUUIDs = userInfo[@"TerminalUUIDs"];
         if ([terminalUUIDs isKindOfClass:NSArray.class] && terminalUUIDs.count > 0) {
-            for (NSString *terminalUUID in terminalUUIDs) {
-                [[Terminal terminalWithUUID:[[NSUUID alloc] initWithUUIDString:terminalUUID]] destroy];
+            for (id terminalUUID in terminalUUIDs) {
+                if (![terminalUUID isKindOfClass:NSString.class])
+                    continue;
+                NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:(NSString *) terminalUUID];
+                if (uuid == nil)
+                    continue;
+                [[Terminal terminalWithUUID:uuid] destroy];
             }
             continue;
         }
 
-        NSString *terminalUUID = userInfo[@"TerminalUUID"];
-        [[Terminal terminalWithUUID:[[NSUUID alloc] initWithUUIDString:terminalUUID]] destroy];
+        id terminalUUID = userInfo[@"TerminalUUID"];
+        if (![terminalUUID isKindOfClass:NSString.class])
+            continue;
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:(NSString *) terminalUUID];
+        if (uuid == nil)
+            continue;
+        [[Terminal terminalWithUUID:uuid] destroy];
     }
 }
 

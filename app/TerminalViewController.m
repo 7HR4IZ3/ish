@@ -412,9 +412,17 @@
     int pid = [notif.userInfo[@"pid"] intValue];
     NSInteger index = [self indexOfSessionWithPid:pid];
     if (index == NSNotFound) {
+        id terminalUUIDValue = notif.userInfo[@"terminalUUID"];
+        if (![terminalUUIDValue isKindOfClass:NSString.class] || ((NSString *) terminalUUIDValue).length == 0)
+            return;
+
+        NSString *terminalUUID = (NSString *) terminalUUIDValue;
         NSInteger unknownPidSessionIndex = NSNotFound;
         for (NSInteger i = 0; i < self.sessions.count; i++) {
-            if (self.sessions[i].pid >= 0)
+            SessionRecord *session = self.sessions[i];
+            if (session.pid >= 0)
+                continue;
+            if (![session.terminal.uuid.UUIDString isEqualToString:terminalUUID])
                 continue;
             if (unknownPidSessionIndex != NSNotFound)
                 return;
@@ -759,8 +767,8 @@
     self.terminal = self.sessions[index].terminal;
     if (self.sessionsTableView != nil) {
         NSIndexPath *indexPath = [NSIndexPath indexPathForRow:index inSection:0];
-        [self.sessionsTableView selectRowAtIndexPath:indexPath animated:YES scrollPosition:UITableViewScrollPositionNone];
         [self.sessionsTableView reloadData];
+        [self.sessionsTableView selectRowAtIndexPath:indexPath animated:YES scrollPosition:UITableViewScrollPositionNone];
     }
 }
 
