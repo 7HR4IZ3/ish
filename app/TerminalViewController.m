@@ -15,6 +15,7 @@
 #import "CurrentRoot.h"
 #import "NSObject+SaneKVO.h"
 #import "LinuxInterop.h"
+#import <objc/runtime.h>
 #include "kernel/init.h"
 #include "kernel/task.h"
 #include "kernel/calls.h"
@@ -50,6 +51,7 @@
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barButtonWidth;
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barHeight;
 @property (weak, nonatomic) IBOutlet UIView *settingsBadge;
+@property (nonatomic) UIScrollView *barScrollView;
 
 @property (weak, nonatomic) IBOutlet UIButton *infoButton;
 @property (weak, nonatomic) IBOutlet UIButton *pasteButton;
@@ -120,6 +122,9 @@
     } else {
         self.barHeight.constant = 43;
     }
+
+    [self configureScrollableKeyboardExtender];
+    [self addExtraKeyboardExtenderButtons];
     
     // SF Symbols is cool
     if (@available(iOS 13, *)) {
@@ -147,6 +152,97 @@
         });
     }];
     [self _updateBadge];
+}
+
+- (void)configureScrollableKeyboardExtender {
+    if ([self.bar.superview isKindOfClass:UIScrollView.class])
+        return;
+
+    UIView *container = self.bar.superview;
+    if (container == nil)
+        return;
+
+    CGFloat leading = self.barLeading.constant;
+    CGFloat trailing = self.barTrailing.constant;
+    CGFloat top = self.barTop.constant;
+    CGFloat bottom = self.barBottom.constant;
+
+    [NSLayoutConstraint deactivateConstraints:@[self.barLeading, self.barTrailing, self.barTop, self.barBottom]];
+
+    UIScrollView *scrollView = [UIScrollView new];
+    scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    scrollView.showsHorizontalScrollIndicator = NO;
+    scrollView.showsVerticalScrollIndicator = NO;
+    scrollView.alwaysBounceHorizontal = YES;
+    scrollView.directionalLockEnabled = YES;
+    [container addSubview:scrollView];
+
+    UILayoutGuide *safeArea = container.safeAreaLayoutGuide;
+    self.barLeading = [scrollView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:leading];
+    self.barTrailing = [safeArea.trailingAnchor constraintEqualToAnchor:scrollView.trailingAnchor constant:trailing];
+    self.barTop = [scrollView.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:top];
+    self.barBottom = [safeArea.bottomAnchor constraintEqualToAnchor:scrollView.bottomAnchor constant:bottom];
+    [NSLayoutConstraint activateConstraints:@[self.barLeading, self.barTrailing, self.barTop, self.barBottom]];
+
+    [self.bar removeFromSuperview];
+    [scrollView addSubview:self.bar];
+    self.bar.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.bar.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
+        [self.bar.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor],
+        [self.bar.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor],
+        [self.bar.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor],
+        [self.bar.heightAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.heightAnchor],
+    ]];
+
+    self.barScrollView = scrollView;
+}
+
+- (void)addExtraKeyboardExtenderButtons {
+    NSArray<NSDictionary<NSString *, NSString *> *> *keys = @[
+        @{@"title": @"~", @"key": @"~", @"label": @"Tilde"},
+        @{@"title": @"`", @"key": @"`", @"label": @"Backtick"},
+        @{@"title": @"[", @"key": @"[", @"label": @"Left Bracket"},
+        @{@"title": @"]", @"key": @"]", @"label": @"Right Bracket"},
+        @{@"title": @"{", @"key": @"{", @"label": @"Left Brace"},
+        @{@"title": @"}", @"key": @"}", @"label": @"Right Brace"},
+        @{@"title": @";", @"key": @";", @"label": @"Semicolon"},
+        @{@"title": @"&", @"key": @"&", @"label": @"Ampersand"},
+    ];
+
+    NSInteger spacerIndex = [self.bar.arrangedSubviews indexOfObjectPassingTest:^BOOL(UIView *view, NSUInteger idx, BOOL *stop) {
+        return ![view isKindOfClass:UIControl.class];
+    }];
+    if (spacerIndex == NSNotFound)
+        spacerIndex = self.bar.arrangedSubviews.count;
+
+    NSMutableArray *barButtons = self.barButtons.mutableCopy ?: [NSMutableArray new];
+    NSMutableArray *barControls = self.barControls.mutableCopy ?: [NSMutableArray new];
+
+    for (NSDictionary<NSString *, NSString *> *entry in keys) {
+        BarButton *button = [BarButton buttonWithType:UIButtonTypeSystem];
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        button.titleLabel.font = [UIFont systemFontOfSize:20];
+        [button setTitle:entry[@"title"] forState:UIControlStateNormal];
+        button.accessibilityLabel = entry[@"label"];
+        [button addTarget:self action:@selector(pressDynamicKey:) forControlEvents:UIControlEventTouchUpInside];
+        objc_setAssociatedObject(button, @selector(pressDynamicKey:), entry[@"key"], OBJC_ASSOCIATION_COPY_NONATOMIC);
+
+        [self.bar insertArrangedSubview:button atIndex:spacerIndex++];
+        [button.widthAnchor constraintEqualToAnchor:self.infoButton.widthAnchor].active = YES;
+
+        [barButtons addObject:button];
+        [barControls addObject:button];
+    }
+
+    self.barButtons = barButtons;
+    self.barControls = barControls;
+}
+
+- (IBAction)pressDynamicKey:(UIButton *)sender {
+    NSString *key = objc_getAssociatedObject(sender, _cmd);
+    if (key != nil)
+        [self pressKey:key];
 }
 
 - (void)awakeFromNib {
