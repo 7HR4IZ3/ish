@@ -22,6 +22,7 @@
 #include "LinuxInterop.h"
 
 static struct path ptmx_path;
+static bool ptmx_path_ready;
 
 struct ios_pty_wq {
     struct ios_pty *pty;
@@ -139,6 +140,9 @@ static void poll_callback(struct file *file, wait_queue_head_t *whead, poll_tabl
 }
 
 struct file *ios_pty_open(nsobj_t *terminal_out) {
+    if (!ptmx_path_ready)
+        return ERR_PTR(-ENODEV);
+
     struct file *ptm_file = dentry_open(&ptmx_path, O_RDWR, current_cred());
     if (IS_ERR(ptm_file))
         return ptm_file;
@@ -186,13 +190,16 @@ static __init int ios_pty_init(void) {
     init_mkdir("/dev/pts", 0755);
     int err = do_mount("devpts", "/dev/pts", "devpts", MS_SILENT, NULL);
     if (err < 0) {
-        panic("ish: failed to mount devpts: %s", errname(err));
+        pr_err("ish: failed to mount devpts: %s\n", errname(err));
+        return err;
     }
     err = kern_path("/dev/pts/ptmx", 0, &ptmx_path);
     if (err < 0) {
-        panic("ish: failed to acquire ptmx: %s", errname(err));
+        pr_err("ish: failed to acquire ptmx: %s\n", errname(err));
+        return err;
     }
+    ptmx_path_ready = true;
     return 0;
 }
 
-device_initcall(ios_pty_init);
+late_initcall(ios_pty_init);

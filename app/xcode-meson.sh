@@ -11,6 +11,28 @@ if [[ $? -ne 0 ]]; then
     export CC_FOR_BUILD="env -u SDKROOT -u IPHONEOS_DEPLOYMENT_TARGET xcrun clang"
     export CC="$CC_FOR_BUILD" # compatibility with meson < 0.54.0
     crossfile=cross.txt
+    # Honor Xcode's active-arch and excluded-arch settings for Meson.
+    if [[ "${ONLY_ACTIVE_ARCH:-}" == "YES" && -n "${NATIVE_ARCH:-}" ]]; then
+        ARCHS="$NATIVE_ARCH"
+    elif [[ -n "${EXCLUDED_ARCHS:-}" ]]; then
+        filtered_archs=()
+        for arch in $ARCHS; do
+            skip=false
+            for excluded in $EXCLUDED_ARCHS; do
+                if [[ "$arch" == "$excluded" ]]; then
+                    skip=true
+                    break
+                fi
+            done
+            if [[ "$skip" == "false" ]]; then
+                filtered_archs+=("$arch")
+            fi
+        done
+        if [[ ${#filtered_archs[@]} -gt 0 ]]; then
+            ARCHS="${filtered_archs[*]}"
+        fi
+    fi
+
     for arch in $ARCHS; do
         arch_args="'-arch', '$arch', $arch_args"
     done

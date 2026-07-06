@@ -757,6 +757,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB21A1702689048200BD19B4 /* libfakefs.a in Frameworks */,
 				497F6D87254E62E100C82F46 /* libish.a in Frameworks */,
 				BBFB2C7E259026C200545EAB /* libish_emu.a in Frameworks */,
 			);
