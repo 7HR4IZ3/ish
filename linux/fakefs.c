@@ -713,6 +713,7 @@ static int fakefs_get_tree(struct fs_context *fc) {
     strcat(path, "/data");
     info->root_fd = host_open(path, O_RDONLY);
     if (info->root_fd < 0) {
+        printk("fakefs: failed to open data root %s: %d\n", path, info->root_fd);
         kfree(path);
         return info->root_fd;
     }
@@ -721,6 +722,8 @@ static int fakefs_get_tree(struct fs_context *fc) {
     strcat(path, "/meta.db");
     int err = fake_db_init(&info->db, path, info->root_fd);
     if (err < 0) {
+        printk("fakefs: failed to initialize metadata database %s: %d\n", path, err);
+        host_close(info->root_fd);
         kfree(path);
         return err;
     }

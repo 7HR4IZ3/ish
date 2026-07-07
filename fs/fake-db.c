@@ -207,8 +207,10 @@ int fake_db_init(struct fakefs_db *fs, const char *db_path, int root_fd) {
 #endif
 
     err = fakefs_migrate(fs, root_fd);
-    if (err < 0)
+    if (err < 0) {
+        printk("fakefs: metadata migration failed: %d\n", err);
         return err;
+    }
 
     // after the filesystem is compressed, transmitted, and uncompressed, the
     // inode numbers will be different. to detect this, the inode of the
@@ -224,6 +226,7 @@ int fake_db_init(struct fakefs_db *fs, const char *db_path, int root_fd) {
             statement = NULL;
             int err = fakefs_rebuild(fs, root_fd);
             if (err < 0) {
+                printk("fakefs: metadata rebuild failed: %d\n", err);
                 return err;
             }
         }

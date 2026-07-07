@@ -11,6 +11,7 @@
 #include <linux/fs.h>
 #include <linux/errname.h>
 #include <linux/device.h>
+#include <linux/errno.h>
 #include <uapi/linux/mount.h>
 #include "LinuxInterop.h"
 
@@ -19,8 +20,14 @@ void FsInitialize(void);
 static __init int ish_rootfs(void) {
     rootfs_mounted = true;
 
+    int err = init_mkdir("/root", 0700);
+    if (err < 0 && err != -EEXIST) {
+        pr_emerg("ish: failed to create /root mountpoint: %s\n", errname(err));
+        return err;
+    }
+
     const char *fakefs_path = DefaultRootPath();
-    int err = do_mount(fakefs_path, "/root", "fakefs", MS_SILENT, NULL);
+    err = do_mount(fakefs_path, "/root", "fakefs", MS_SILENT, NULL);
     if (err < 0) {
         pr_emerg("ish: failed to mount fakefs root from %s: %s\n", fakefs_path, errname(err));
         return err;
