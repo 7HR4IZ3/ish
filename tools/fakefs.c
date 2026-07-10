@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <archive.h>
 #include <archive_entry.h>
 
@@ -20,14 +21,16 @@
 #endif
 
 // I have a weird way of error handling
+#define ERROR_MESSAGE(_message) ((_message) ? (_message) : "unknown fakefs import error")
+#define ARCHIVE_ERROR_MESSAGE(archive) (archive_error_string(archive) ? archive_error_string(archive) : "failed to open or read archive")
 #define FILL_ERR(_type, _code, _message) do { \
     err_out->line = __LINE__; \
     err_out->type = _type; \
     err_out->code = _code; \
-    err_out->message = strdup(_message); \
+    err_out->message = strdup(ERROR_MESSAGE(_message)); \
     return false; \
 } while (0)
-#define ARCHIVE_ERR(archive) FILL_ERR(ERR_ARCHIVE, archive_errno(archive), archive_error_string(archive))
+#define ARCHIVE_ERR(archive) FILL_ERR(ERR_ARCHIVE, archive_errno(archive), ARCHIVE_ERROR_MESSAGE(archive))
 #define POSIX_ERR() FILL_ERR(ERR_POSIX, errno, strerror(errno))
 #undef HANDLE_ERR // for sqlite
 #define HANDLE_ERR(db) FILL_ERR(ERR_SQLITE, sqlite3_extended_errcode(db), sqlite3_errmsg(db))
@@ -77,6 +80,67 @@ static const char *schema = Q(
     pragma user_version=3;
 );
 
+static void archive_reader_support(struct archive *archive) {
+    archive_read_support_filter_all(archive);
+    archive_read_support_format_tar(archive);
+    archive_read_support_format_zip(archive);
+}
+
+// Return the sole top-level directory when every archive entry lives under it.
+// The importer then treats that directory as the filesystem root.
+static bool archive_wrapper_path(const char *archive_path, char wrapper[MAX_PATH], struct fakefsify_error *err_out) {
+    struct archive *archive = archive_read_new();
+    if (archive == NULL)
+        ARCHIVE_ERR(archive);
+    archive_reader_support(archive);
+    if (archive_read_open_filename(archive, archive_path, 65536) != ARCHIVE_OK)
+        ARCHIVE_ERR(archive);
+
+    bool have_candidate = false;
+    bool has_root_entry = false;
+    wrapper[0] = '\0';
+    struct archive_entry *entry;
+    int err;
+    while ((err = archive_read_next_header(archive, &entry)) == ARCHIVE_OK) {
+        char path[MAX_PATH];
+        if (!path_normalize(archive_entry_pathname(entry), path))
+            continue;
+        if (path[0] == '\0') {
+            has_root_entry = true;
+            continue;
+        }
+        char *slash = strchr(path + 1, '/');
+        size_t component_length = slash ? (size_t) (slash - path) : strlen(path);
+        if (!have_candidate) {
+            memcpy(wrapper, path, component_length);
+            wrapper[component_length] = '\0';
+            have_candidate = true;
+        } else if (strncmp(path, wrapper, strlen(wrapper)) != 0 ||
+                   (path[strlen(wrapper)] != '\0' && path[strlen(wrapper)] != '/')) {
+            wrapper[0] = '\0';
+            break;
+        }
+    }
+    if (err != ARCHIVE_EOF)
+        ARCHIVE_ERR(archive);
+    if (has_root_entry || !have_candidate)
+        wrapper[0] = '\0';
+    if (archive_read_free(archive) != ARCHIVE_OK)
+        ARCHIVE_ERR(archive);
+    return true;
+}
+
+static void strip_archive_wrapper(char *path, const char *wrapper) {
+    if (wrapper[0] == '\0')
+        return;
+    size_t length = strlen(wrapper);
+    if (strcmp(path, wrapper) == 0) {
+        path[0] = '\0';
+    } else if (strncmp(path, wrapper, length) == 0 && path[length] == '/') {
+        memmove(path, path + length, strlen(path + length) + 1);
+    }
+}
+
 bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_error *err_out, struct progress p) {
     int err = mkdir(fs, 0777);
     if (err < 0)
@@ -99,12 +163,15 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
     EXEC("begin");
     EXEC(schema);
 
+    char wrapper[MAX_PATH];
+    if (!archive_wrapper_path(archive_path, wrapper, err_out))
+        return false;
+
     // open the archive
     struct archive *archive = archive_read_new();
     if (archive == NULL)
         ARCHIVE_ERR(archive);
-    archive_read_support_filter_gzip(archive);
-    archive_read_support_format_tar(archive);
+    archive_reader_support(archive);
     if (archive_read_open_filename(archive, archive_path, 65536) != ARCHIVE_OK)
         ARCHIVE_ERR(archive);
 
@@ -128,6 +195,7 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
             fprintf(stderr, "warning: skipped possible path traversal %s\n", archive_entry_pathname(entry));
             continue;
         }
+        strip_archive_wrapper(entry_path, wrapper);
         if (!progress_update(&p, (double) archive_filter_bytes(archive, -1) / archive_bytes, entry_path))
             CANCEL();
         if (strcmp(entry_path, "") == 0)
@@ -140,6 +208,7 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
                 fprintf(stderr, "warning: almost pwned by hardlink %s\n", hardlink);
                 continue;
             }
+            strip_archive_wrapper(hardlink_path, wrapper);
             if (linkat(root_fd, fix_path(hardlink_path), root_fd, fix_path(entry_path), 0) < 0)
                 POSIX_ERR();
             sqlite3_bind_blob64(insert_hardlink, 1, entry_path, strlen(entry_path), SQLITE_TRANSIENT);
@@ -260,6 +329,179 @@ bool fakefs_import(const char *archive_path, const char *fs, struct fakefsify_er
 
     if (archive_read_free(archive) != ARCHIVE_OK)
         ARCHIVE_ERR(archive);
+    return true;
+}
+
+struct directory_import_context {
+    int root_fd;
+    sqlite3 *db;
+    sqlite3_stmt *insert_stat;
+    sqlite3_stmt *insert_path;
+    struct progress progress;
+    size_t entries_seen;
+};
+
+static bool directory_import_record(struct directory_import_context *ctx, const char *relative, const char *source, struct fakefsify_error *err_out) {
+    struct stat source_stat;
+    if (lstat(source, &source_stat) < 0)
+        POSIX_ERR();
+
+    char normalized[MAX_PATH];
+    if (!path_normalize(relative, normalized))
+        FILL_ERR(ERR_POSIX, EINVAL, "invalid source path");
+    const char *target = fix_path(normalized);
+
+    if (!progress_update(&ctx->progress, 0, normalized))
+        CANCEL();
+
+    if (S_ISDIR(source_stat.st_mode)) {
+        if (mkdirat(ctx->root_fd, target, 0777) < 0 && errno != EEXIST)
+            POSIX_ERR();
+    } else if (S_ISREG(source_stat.st_mode)) {
+        int source_fd = open(source, O_RDONLY);
+        if (source_fd < 0)
+            POSIX_ERR();
+        int destination_fd = openat(ctx->root_fd, target, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (destination_fd < 0) {
+            close(source_fd);
+            POSIX_ERR();
+        }
+        char buffer[65536];
+        ssize_t read_count;
+        while ((read_count = read(source_fd, buffer, sizeof(buffer))) > 0) {
+            for (ssize_t offset = 0; offset < read_count;) {
+                ssize_t written = write(destination_fd, buffer + offset, (size_t) (read_count - offset));
+                if (written < 0) {
+                    close(source_fd);
+                    close(destination_fd);
+                    POSIX_ERR();
+                }
+                offset += written;
+            }
+        }
+        if (read_count < 0) {
+            close(source_fd);
+            close(destination_fd);
+            POSIX_ERR();
+        }
+        close(source_fd);
+        close(destination_fd);
+    } else if (S_ISLNK(source_stat.st_mode)) {
+        char link_target[MAX_PATH];
+        ssize_t length = readlink(source, link_target, sizeof(link_target) - 1);
+        if (length < 0)
+            POSIX_ERR();
+        link_target[length] = '\0';
+        if (symlinkat(link_target, ctx->root_fd, target) < 0)
+            POSIX_ERR();
+    } else {
+        FILL_ERR(ERR_POSIX, ENOTSUP, "unsupported file type in rootfs folder");
+    }
+
+    struct timespec times[2] = {
+#if __APPLE__
+        source_stat.st_atimespec,
+        source_stat.st_mtimespec,
+#else
+        source_stat.st_atim,
+        source_stat.st_mtim,
+#endif
+    };
+    if (utimensat(ctx->root_fd, target, times, AT_SYMLINK_NOFOLLOW) < 0 && !S_ISLNK(source_stat.st_mode))
+        POSIX_ERR();
+
+    struct ish_stat stat = {
+        .mode = (uint32_t) source_stat.st_mode,
+        .uid = (uint32_t) source_stat.st_uid,
+        .gid = (uint32_t) source_stat.st_gid,
+        .rdev = (uint32_t) source_stat.st_rdev,
+    };
+    sqlite3_bind_blob64(ctx->insert_stat, 1, &stat, sizeof(stat), SQLITE_TRANSIENT);
+    if (sqlite3_step(ctx->insert_stat) != SQLITE_DONE)
+        HANDLE_ERR(ctx->db);
+    if (sqlite3_reset(ctx->insert_stat) != SQLITE_OK)
+        HANDLE_ERR(ctx->db);
+    sqlite3_clear_bindings(ctx->insert_stat);
+    sqlite3_bind_blob64(ctx->insert_path, 1, normalized, strlen(normalized), SQLITE_TRANSIENT);
+    sqlite3_bind_int64(ctx->insert_path, 2, sqlite3_last_insert_rowid(ctx->db));
+    if (sqlite3_step(ctx->insert_path) != SQLITE_DONE)
+        HANDLE_ERR(ctx->db);
+    if (sqlite3_reset(ctx->insert_path) != SQLITE_OK)
+        HANDLE_ERR(ctx->db);
+    sqlite3_clear_bindings(ctx->insert_path);
+    ctx->entries_seen++;
+    return true;
+}
+
+static bool directory_import_walk(struct directory_import_context *ctx, const char *source, const char *relative, struct fakefsify_error *err_out) {
+    if (!directory_import_record(ctx, relative, source, err_out))
+        return false;
+    struct stat source_stat;
+    if (lstat(source, &source_stat) < 0)
+        POSIX_ERR();
+    if (!S_ISDIR(source_stat.st_mode))
+        return true;
+
+    DIR *directory = opendir(source);
+    if (directory == NULL)
+        POSIX_ERR();
+    struct dirent *entry;
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+            continue;
+        char child_source[PATH_MAX];
+        char child_relative[MAX_PATH];
+        snprintf(child_source, sizeof(child_source), "%s/%s", source, entry->d_name);
+        snprintf(child_relative, sizeof(child_relative), "%s/%s", relative, entry->d_name);
+        if (!directory_import_walk(ctx, child_source, child_relative, err_out)) {
+            closedir(directory);
+            return false;
+        }
+    }
+    closedir(directory);
+    return true;
+}
+
+bool fakefs_import_directory(const char *source_path, const char *fs, struct fakefsify_error *err_out, struct progress p) {
+    int err = 0;
+    struct stat source_stat;
+    if (lstat(source_path, &source_stat) < 0)
+        POSIX_ERR();
+    if (!S_ISDIR(source_stat.st_mode))
+        FILL_ERR(ERR_POSIX, ENOTDIR, "rootfs source is not a directory");
+    if (mkdir(fs, 0777) < 0)
+        POSIX_ERR();
+
+    char data_path[PATH_MAX];
+    snprintf(data_path, sizeof(data_path), "%s/data", fs);
+    if (mkdir(data_path, 0777) < 0)
+        POSIX_ERR();
+    int root_fd = open(data_path, O_RDONLY);
+    if (root_fd < 0)
+        POSIX_ERR();
+
+    char database_path[PATH_MAX];
+    snprintf(database_path, sizeof(database_path), "%s/meta.db", fs);
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(database_path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL) != SQLITE_OK)
+        HANDLE_ERR(db);
+    EXEC("pragma journal_mode=wal")
+    EXEC("begin");
+    EXEC(schema);
+    struct directory_import_context context = {
+        .root_fd = root_fd,
+        .db = db,
+        .insert_stat = PREPARE("insert into stats (stat) values (?)"),
+        .insert_path = PREPARE("insert or replace into paths values (?, ?)"),
+        .progress = p,
+    };
+    if (!directory_import_walk(&context, source_path, "", err_out))
+        return false;
+    FINALIZE(context.insert_stat);
+    FINALIZE(context.insert_path);
+    EXEC("commit");
+    sqlite3_close(db);
+    close(root_fd);
     return true;
 }
 

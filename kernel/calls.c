@@ -248,7 +248,7 @@ syscall_t syscall_table[] = {
     [377] = (syscall_t) sys_copy_file_range,
     [383] = (syscall_t) sys_statx,
     [384] = (syscall_t) sys_arch_prctl,
-    [422] = (syscall_t) syscall_silent_stub, // futex_time64
+    [422] = (syscall_t) sys_futex_time64,
     [439] = (syscall_t) syscall_silent_stub, // faccessat2
 };
 

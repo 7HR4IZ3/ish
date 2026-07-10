@@ -27,6 +27,12 @@
 
 extern void run_kernel(void);
 
+void linux_set_session_exit_handler(LinuxSessionExitBlock handler) {
+    // The Linux-kernel runtime does not expose an equivalent of iSH's
+    // userspace exit_hook. Terminal teardown remains driven by destroy().
+    (void) handler;
+}
+
 void actuate_kernel(const char *cmdline) {
     strcpy(boot_command_line, cmdline);
     run_kernel();

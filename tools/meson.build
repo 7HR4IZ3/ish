@@ -40,9 +40,13 @@ if libarchive.found()
     fakefsify_src = [
         'fakefsify.c',
         'fakefs.c',
+        'fakefsify-log.c',
         '../util/fchdir.c',
+        '../fs/fake-db.c',
+        '../fs/fake-migrate.c',
+        '../fs/fake-rebuild.c',
     ]
-    fakefsify = executable('fakefsify', fakefsify_src, dependencies: [libarchive], link_with: [libfakefs], include_directories: [includes])
+    fakefsify = executable('fakefsify', fakefsify_src, dependencies: [libarchive], include_directories: [includes])
     custom_target('unfakefsify',
         build_by_default: true,
         command: ['ln', '-sf', 'fakefsify', '@OUTPUT@'],

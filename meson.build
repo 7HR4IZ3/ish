@@ -35,6 +35,7 @@ librt = cc.find_library('rt', required: false)
 libm = cc.find_library('m', required: false)
 libdl = cc.find_library('dl', required: false)
 sqlite3 = cc.find_library('sqlite3')
+libarchive = dependency('libarchive', required: false)
 dependencies = [librt, libm, libdl, threads, sqlite3]
 
 subdir('vdso') # ish depends on the vdso
