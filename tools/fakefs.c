@@ -392,8 +392,21 @@ static bool directory_import_record(struct directory_import_context *ctx, const 
         if (length < 0)
             POSIX_ERR();
         link_target[length] = '\0';
-        if (symlinkat(link_target, ctx->root_fd, target) < 0)
+        // fakefs represents Linux symlinks as ordinary host files containing
+        // their target; the S_IFLNK bit lives in meta.db. A real host symlink
+        // is followed by openat() and breaks merged-/usr roots at boot.
+        int destination_fd = openat(ctx->root_fd, target, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+        if (destination_fd < 0)
             POSIX_ERR();
+        for (ssize_t offset = 0; offset < length;) {
+            ssize_t written = write(destination_fd, link_target + offset, (size_t) (length - offset));
+            if (written < 0) {
+                close(destination_fd);
+                POSIX_ERR();
+            }
+            offset += written;
+        }
+        close(destination_fd);
     } else {
         FILL_ERR(ERR_POSIX, ENOTSUP, "unsupported file type in rootfs folder");
     }
