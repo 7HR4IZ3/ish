@@ -21,6 +21,42 @@
 // this exists only to override readdir to fix the returned inode numbers
 static struct fd_ops fakefs_fdops;
 
+/**
+ * Register an orphaned real file in the fakefs metadata database.
+ *
+ * Called when a real file/directory exists on the host filesystem but has no
+ * corresponding entry in meta.db — e.g. a file dropped into the rootfs via
+ * iOS Finder.  Determines the file type from the host stat and creates a
+ * plausible Linux metadata entry so the file becomes visible inside iSH.
+ */
+static ino_t fakefs_register_orphan(struct mount *mount, const char *path) {
+    struct fakefs_db *fs = &mount->fakefs;
+
+    struct stat real_stat;
+    if (fstatat(mount->root_fd, fix_path(path), &real_stat, AT_SYMLINK_NOFOLLOW) < 0)
+        return 0;
+
+    struct ish_stat ishstat;
+    ishstat.uid = current ? current->euid : 0;
+    ishstat.gid = current ? current->egid : 0;
+    ishstat.rdev = 0;
+
+    if (S_ISDIR(real_stat.st_mode))
+        ishstat.mode = S_IFDIR | 0755;
+    else if (S_ISREG(real_stat.st_mode))
+        ishstat.mode = S_IFREG | 0644;
+    else
+        return 0; // symlinks, devices, etc. — not from Finder drops
+
+    db_begin_write(fs);
+    ino_t existing = path_get_inode(fs, path);
+    if (existing == 0)
+        path_create(fs, path, &ishstat);
+    ino_t inode = existing ? existing : path_get_inode(fs, path);
+    db_commit(fs);
+    return inode;
+}
+
 static struct fd *fakefs_open(struct mount *mount, const char *path, int flags, int mode) {
     struct fakefs_db *fs = &mount->fakefs;
     struct fd *fd = realfs.open(mount, path, flags, 0666);
@@ -38,11 +74,19 @@ static struct fd *fakefs_open(struct mount *mount, const char *path, int flags, 
             path_create(fs, path, &ishstat);
             fd->fake_inode = path_get_inode(fs, path);
         }
+    } else if (fd->fake_inode == 0) {
+        // Real file exists but metadata is missing — auto-register it
+        db_commit(fs);
+        fd->fake_inode = fakefs_register_orphan(mount, path);
+        if (fd->fake_inode == 0) {
+            fd_close(fd);
+            return ERR_PTR(_ENOENT);
+        }
+        fd->ops = &fakefs_fdops;
+        return fd;
     }
     db_commit(fs);
     if (fd->fake_inode == 0) {
-        // metadata for this file is missing
-        // TODO unlink the real file
         fd_close(fd);
         return ERR_PTR(_ENOENT);
     }
@@ -190,8 +234,24 @@ static int fakefs_stat(struct mount *mount, const char *path, struct statbuf *fa
     struct ish_stat ishstat;
     ino_t inode;
     if (!path_read_stat(fs, path, &ishstat, &inode)) {
+        // Metadata missing — check if real file exists and register it
+        int err = realfs.stat(mount, path, fake_stat);
+        if (err < 0) {
+            db_rollback(fs);
+            return err;
+        }
         db_rollback(fs);
-        return _ENOENT;
+        inode = fakefs_register_orphan(mount, path);
+        if (inode == 0)
+            return _ENOENT;
+        if (!inode_read_stat_if_exist(fs, inode, &ishstat))
+            return _ENOENT;
+        fake_stat->inode = inode;
+        fake_stat->mode = ishstat.mode;
+        fake_stat->uid = ishstat.uid;
+        fake_stat->gid = ishstat.gid;
+        fake_stat->rdev = ishstat.rdev;
+        return 0;
     }
     int err = realfs.stat(mount, path, fake_stat);
     db_commit(fs);
@@ -346,10 +406,12 @@ retry:
     db_begin_read(fs);
     entry->inode = path_get_inode(fs, entry_path);
     db_commit(fs);
-    // it's quite possible that due to some mishap there's no metadata for this file
-    // so just skip this entry, instead of crashing the program, so there's hope for recovery
-    if (entry->inode == 0)
-        goto retry;
+    if (entry->inode == 0) {
+        // Orphaned real file — try to register it so it shows up in listings
+        entry->inode = fakefs_register_orphan(fd->mount, entry_path);
+        if (entry->inode == 0)
+            goto retry; // still no luck — skip
+    }
     return res;
 }
 

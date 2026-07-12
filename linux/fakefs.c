@@ -48,6 +48,41 @@ static int open_fd_for_dentry(struct inode *dir, struct dentry *dentry) {
     return fd;
 }
 
+static ino_t fakefs_register_orphan(struct fakefs_super *info, int dir_fd,
+                                     const char *child_name, const char *full_path) {
+    int host_fd = host_openat(dir_fd, child_name, O_RDONLY, 0);
+    if (host_fd < 0)
+        return 0;
+
+    struct hostfs_stat host_stat;
+    int err = stat_file(NULL, &host_stat, host_fd);
+    host_close(host_fd);
+    if (err < 0)
+        return 0;
+
+    umode_t mode;
+    if (S_ISDIR(host_stat.mode))
+        mode = S_IFDIR | 0755;
+    else if (S_ISREG(host_stat.mode))
+        mode = S_IFREG | 0644;
+    else
+        return 0; /* symlinks, devices — not from Finder drops */
+
+    struct ish_stat ishstat = {
+        .mode = mode,
+        .uid = 0,
+        .gid = 0,
+        .rdev = 0,
+    };
+
+    db_begin_write(&info->db);
+    ino_t ino = path_get_inode(&info->db, full_path);
+    if (ino == 0)
+        ino = path_create(&info->db, full_path, &ishstat);
+    db_commit(&info->db);
+    return ino;
+}
+
 static struct dentry *fakefs_lookup(struct inode *ino, struct dentry *dentry, unsigned int flags) {
     struct fakefs_super *info = ino->i_sb->s_fs_info;
     struct inode *child = NULL;
@@ -57,9 +92,41 @@ static struct dentry *fakefs_lookup(struct inode *ino, struct dentry *dentry, un
         return ERR_PTR(PTR_ERR(path));
     db_begin_read(&info->db);
     inode_t child_ino = path_get_inode(&info->db, path);
+    if (child_ino == 0) {
+        /* Transaction is resolved; return directly instead of
+         * going through out: which also does db_commit/db_rollback. */
+        db_commit(&info->db);
+        child_ino = fakefs_register_orphan(info, INODE_FD(ino),
+                                           dentry->d_name.name, path);
+        __putname(path);
+
+        if (child_ino == 0)
+            return NULL;
+
+        child = ilookup(ino->i_sb, child_ino);
+        if (child != NULL)
+            return d_splice_alias(child, dentry);
+
+        int fd = open_fd_for_dentry(ino, dentry);
+        if (fd < 0)
+            return ERR_PTR(fd);
+
+        child = new_inode(ino->i_sb);
+        if (child == NULL) {
+            host_close(fd);
+            return ERR_PTR(-ENOMEM);
+        }
+        child->i_ino = child_ino;
+        INODE_FD(child) = fd;
+        int err = read_inode(child);
+        if (err < 0) {
+            iput(child);
+            return ERR_PTR(err);
+        }
+
+        return d_splice_alias(child, dentry);
+    }
     __putname(path);
-    if (child_ino == 0)
-        goto out;
 
     child = ilookup(ino->i_sb, child_ino);
     if (child != NULL)
@@ -419,6 +486,10 @@ static int fakefs_iterate(struct file *file, struct dir_context *ctx) {
             strcpy(&dir_path[dir_path_len + 1], ent.name);
             ent.ino = path_get_inode(&info->db, dir_path);
             db_commit(&info->db);
+            if (ent.ino == 0) {
+                ent.ino = fakefs_register_orphan(info, INODE_FD(file->f_inode),
+                                                 ent.name, dir_path);
+            }
         }
         if (!dir_emit(ctx, ent.name, strlen(ent.name), ent.ino, ent.type))
             break;
