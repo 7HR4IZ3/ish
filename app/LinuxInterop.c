@@ -40,9 +40,10 @@ void actuate_kernel(const char *cmdline) {
 
 static int panic_report(struct notifier_block *nb, unsigned long action, void *data) {
     const char *message = data;
-    async_do_in_ios(^{
-        ReportPanic(message);
-    });
+    /* A panic immediately traps the host process, so an asynchronously queued
+     * report may never run. Persist/report it synchronously while the buffer
+     * is still valid. */
+    ReportPanic(message);
     return 0;
 }
 
@@ -122,23 +123,30 @@ struct ish_session {
 
 static int session_init(struct subprocess_info *info, struct cred *cred) {
     struct ish_session *session = info->data;
+    ReportExecTrace("session.init.enter", 1);
     int err = ksys_setsid();
+    ReportExecTrace("session.init.setsid", err);
     if (err < 0)
         return err;
     err = vfs_ioctl(session->tty, TIOCSCTTY, 0);
+    ReportExecTrace("session.init.ctty", err);
     if (err < 0)
         return err;
     for (int fd = 0; fd <= 2; fd++) {
         int err = replace_fd(fd, session->tty, 0);
+        ReportExecTrace(fd == 0 ? "session.init.stdin" : fd == 1 ? "session.init.stdout" : "session.init.stderr", err);
         if (err < 0)
             return err;
     }
     session->pid = task_pid_nr(current);
+    ReportExecTrace("session.init.ready", session->pid);
     return 0;
 }
 
 static void session_cleanup(struct subprocess_info *info) {
     struct ish_session *session = info->data;
+    ReportExecTrace("session.cleanup.retval", info->retval);
+    ReportExecTrace("session.cleanup.pid", session->pid);
     if (session->pid != 0 || info->retval != 0)
         session->callback(info->retval, session->pid, objc_get(session->terminal));
     else; // otherwise, there was a synchronous failure, returned directly from call_usermodehelper_exec
@@ -149,11 +157,36 @@ static void session_cleanup(struct subprocess_info *info) {
 }
 
 void linux_start_session(const char *exe, const char *const *argv, const char *const *envp, StartSessionDoneBlock done) {
+    ReportExecTrace("session.start.enter", 1);
     struct ish_session *session = kzalloc(sizeof(*session), GFP_KERNEL);
+    if (session == NULL) {
+        ReportExecTrace("session.alloc", -ENOMEM);
+        done(-ENOMEM, 0, NULL);
+        return;
+    }
+
     session->tty = ios_pty_open(&session->terminal);
+    if (IS_ERR(session->tty)) {
+        int err = PTR_ERR(session->tty);
+        ReportExecTrace("session.pty_open", err);
+        kfree(session);
+        done(err, 0, NULL);
+        return;
+    }
+    ReportExecTrace("session.start.pty", 0);
+
     session->callback = done;
     struct subprocess_info *proc = call_usermodehelper_setup(exe, (char **) argv, (char **) envp, GFP_KERNEL, session_init, session_cleanup, session);
+    if (proc == NULL) {
+        ReportExecTrace("session.exec_setup", -ENOMEM);
+        fput(session->tty);
+        objc_put(session->terminal);
+        kfree(session);
+        done(-ENOMEM, 0, NULL);
+        return;
+    }
     int err = call_usermodehelper_exec(proc, UMH_WAIT_EXEC);
+    ReportExecTrace("session.exec", err);
     if (err < 0)
         done(err, 0, NULL);
 }

@@ -8,6 +8,9 @@
 #include <resolv.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import "AboutViewController.h"
 #import "AppDelegate.h"
@@ -62,8 +65,13 @@ static void ios_handle_die(const char *msg) {
 }
 #elif ISH_LINUX
 void ReportPanic(const char *message) {
+    NSString *panicMessage = [NSString stringWithUTF8String:message ?: "unknown kernel panic"];
+    NSString *panicPath = [ContainerURL().path stringByAppendingPathComponent:@"ish_last_panic.txt"];
+    [panicMessage writeToFile:panicPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    fprintf(stderr, "iSH kernel panic: %s\n", message ?: "unknown kernel panic");
     [NSNotificationCenter.defaultCenter postNotificationName:KernelPanicNotification object:nil userInfo:@{@"message":@(message)}];
 }
+
 #endif
 
 static int bootError;
@@ -159,7 +167,53 @@ static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 
 #else
     // On first launch, this will trigger the import of the default root. Make sure to do this before entering the kernel, because it needs to run something on the main thread, and that would deadlock.
+
+    // Hostfs migration: delete any fakefs-format root and re-extract as a
+    // plain directory so symlinks, device nodes etc. are native files.
+    {
+        // Build path manually — Roots singleton not yet created.
+        // RootsDir() = ContainerURL()/roots
+        NSURL *container = ContainerURL();
+        NSString *rootPath = [[container URLByAppendingPathComponent:@"roots/default"] path];
+        NSString *metaDb = [rootPath stringByAppendingPathComponent:@"meta.db"];
+        if ([NSFileManager.defaultManager fileExistsAtPath:metaDb]) {
+            NSLog(@"[boot] deleting old fakefs root at %@ for hostfs migration", rootPath);
+            [NSFileManager.defaultManager removeItemAtPath:rootPath error:nil];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"Default Root"];
+        }
+    }
+
     [Roots instance];
+
+    // Diagnostics: write rootfs info to shared container for post-crash analysis.
+    {
+        NSString *rootPath = [NSString stringWithUTF8String:DefaultRootPath()];
+        NSError *err = nil;
+        NSArray *contents = [NSFileManager.defaultManager contentsOfDirectoryAtPath:rootPath error:&err];
+        NSString *diagPath = [ContainerURL().path stringByAppendingPathComponent:@"ish_boot_diag.txt"];
+
+        NSMutableString *diag = [NSMutableString string];
+        [diag appendFormat:@"DefaultRootPath: %@\n", rootPath];
+        [diag appendFormat:@"dirExists: %d\n", [NSFileManager.defaultManager fileExistsAtPath:rootPath]];
+        if (err) {
+            [diag appendFormat:@"listDir error: %@\n", err];
+        } else {
+            [diag appendFormat:@"contents (%lu items): %@\n",
+             (unsigned long)contents.count,
+             [contents componentsJoinedByString:@", "]];
+        }
+        // Check key files
+        [diag appendFormat:@"has bin/sh: %d\n",
+         [NSFileManager.defaultManager fileExistsAtPath:[rootPath stringByAppendingPathComponent:@"bin/sh"]]];
+        [diag appendFormat:@"has sbin/init: %d\n",
+         [NSFileManager.defaultManager fileExistsAtPath:[rootPath stringByAppendingPathComponent:@"sbin/init"]]];
+        [diag appendFormat:@"has etc: %d\n",
+         [NSFileManager.defaultManager fileExistsAtPath:[rootPath stringByAppendingPathComponent:@"etc"]]];
+
+        [diag writeToFile:diagPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSLog(@"[boot] diag written to %@:\n%@", diagPath, diag);
+    }
+
     NSArray<NSString *> *args = @[];
     actuate_kernel([args componentsJoinedByString:@" "].UTF8String);
 #endif
@@ -168,10 +222,6 @@ static NSString *const kSkipStartupMessage = @"Skip Startup Message";
 }
 
 #if ISH_LINUX
-const char *DefaultRootPath() {
-    return [Roots.instance rootUrl:Roots.instance.defaultRoot].fileSystemRepresentation;
-}
-
 void SyncHostname(void) {
     async_do_in_workqueue(^{
         char hostname[256];

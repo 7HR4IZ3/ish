@@ -140,12 +140,18 @@ static void poll_callback(struct file *file, wait_queue_head_t *whead, poll_tabl
 }
 
 struct file *ios_pty_open(nsobj_t *terminal_out) {
-    if (!ptmx_path_ready)
+    ReportExecTrace("pty.open.enter", ptmx_path_ready ? 1 : 0);
+    if (!ptmx_path_ready) {
+        ReportExecTrace("pty.open.not_ready", -ENODEV);
         return ERR_PTR(-ENODEV);
+    }
 
     struct file *ptm_file = dentry_open(&ptmx_path, O_RDWR, current_cred());
-    if (IS_ERR(ptm_file))
+    if (IS_ERR(ptm_file)) {
+        ReportExecTrace("pty.open.master", PTR_ERR(ptm_file));
         return ptm_file;
+    }
+    ReportExecTrace("pty.open.master", 0);
 
     int lock_pty = 0;
     vfs_ioctl(ptm_file, TIOCSPTLCK, (unsigned long) &lock_pty);
@@ -155,6 +161,7 @@ struct file *ios_pty_open(nsobj_t *terminal_out) {
 
     // sadly this api can't just return a struct file *
     int fd = vfs_ioctl(ptm_file, TIOCGPTPEER, O_RDWR);
+    ReportExecTrace("pty.open.peer", fd);
     if (fd < 0) {
         fput(ptm_file);
         return ERR_PTR(fd);
@@ -164,6 +171,7 @@ struct file *ios_pty_open(nsobj_t *terminal_out) {
 
     struct ios_pty *pty = kzalloc(sizeof(*pty), GFP_KERNEL);
     if (pty == NULL) {
+        ReportExecTrace("pty.open.alloc", -ENOMEM);
         fput(pts_file);
         fput(ptm_file);
         return ERR_PTR(-ENOMEM);
@@ -178,6 +186,7 @@ struct file *ios_pty_open(nsobj_t *terminal_out) {
     pty->linux_tty.ops = &ios_pty_callbacks;
     Terminal_setLinuxTTY(pty->terminal, &pty->linux_tty);
     *terminal_out = pty->terminal;
+    ReportExecTrace("pty.open.ready", pty->terminal != NULL);
 
     init_poll_funcptr(&pty->pt, poll_callback);
     __poll_t revents = vfs_poll(pty->ptm, &pty->pt);
@@ -187,18 +196,23 @@ struct file *ios_pty_open(nsobj_t *terminal_out) {
 }
 
 static __init int ios_pty_init(void) {
-    init_mkdir("/dev/pts", 0755);
+    ReportExecTrace("pty.init.enter", 1);
+    int mkdir_err = init_mkdir("/dev/pts", 0755);
+    ReportExecTrace("pty.init.mkdir", mkdir_err);
     int err = do_mount("devpts", "/dev/pts", "devpts", MS_SILENT, NULL);
+    ReportExecTrace("pty.init.mount", err);
     if (err < 0) {
         pr_err("ish: failed to mount devpts: %s\n", errname(err));
         return err;
     }
     err = kern_path("/dev/pts/ptmx", 0, &ptmx_path);
+    ReportExecTrace("pty.init.ptmx_path", err);
     if (err < 0) {
         pr_err("ish: failed to acquire ptmx: %s\n", errname(err));
         return err;
     }
     ptmx_path_ready = true;
+    ReportExecTrace("pty.init.ready", 1);
     return 0;
 }
 

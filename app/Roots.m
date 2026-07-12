@@ -9,7 +9,8 @@
 #import "Roots.h"
 #import "AppGroup.h"
 #import "NSObject+SaneKVO.h"
-#include "tools/fakefs.h"
+#include <archive.h>
+#include <archive_entry.h>
 
 static NSURL *RootsDir(void) {
     static NSURL *rootsDir;
@@ -119,34 +120,65 @@ static NSString *kDefaultRoot = @"Default Root";
     return YES;
 }
 
-void root_progress_callback(void *cookie, double progress, const char *message, bool *should_cancel) {
-    id <ProgressReporter> reporter = (__bridge id<ProgressReporter>) cookie;
-    [reporter updateProgress:progress message:[NSString stringWithUTF8String:message]];
-    if ([reporter shouldCancel])
-        *should_cancel = true;
+static BOOL ExtractArchiveToDirectory(NSString *archivePath, NSString *destination, NSError **error) {
+    struct archive *reader = archive_read_new();
+    struct archive *writer = archive_write_disk_new();
+    archive_read_support_filter_all(reader);
+    archive_read_support_format_all(reader);
+    archive_write_disk_set_options(writer, ARCHIVE_EXTRACT_TIME | ARCHIVE_EXTRACT_PERM |
+                                           ARCHIVE_EXTRACT_ACL | ARCHIVE_EXTRACT_XATTR |
+                                           ARCHIVE_EXTRACT_SECURE_NODOTDOT |
+                                           ARCHIVE_EXTRACT_SECURE_SYMLINKS);
+    int rc = archive_read_open_filename(reader, archivePath.fileSystemRepresentation, 65536);
+    struct archive_entry *entry = NULL;
+    while (rc == ARCHIVE_OK && (rc = archive_read_next_header(reader, &entry)) == ARCHIVE_OK) {
+        NSString *relative = [NSString stringWithUTF8String:archive_entry_pathname(entry) ?: ""];
+        if (relative.length == 0 || relative.isAbsolutePath || [relative.pathComponents containsObject:@".."]) {
+            if (error) *error = [NSError errorWithDomain:@"Roots" code:1 userInfo:@{NSLocalizedDescriptionKey: @"Invalid path in archive"}];
+            rc = ARCHIVE_FATAL;
+            break;
+        }
+        mode_t fileType = archive_entry_filetype(entry);
+        if (fileType == AE_IFCHR || fileType == AE_IFBLK ||
+            fileType == AE_IFIFO || fileType == AE_IFSOCK) {
+            archive_read_data_skip(reader);
+            continue;
+        }
+        NSString *output = [destination stringByAppendingPathComponent:relative];
+        archive_entry_set_pathname(entry, output.fileSystemRepresentation);
+        rc = archive_write_header(writer, entry);
+        if (rc == ARCHIVE_OK) {
+            const void *buffer = NULL;
+            size_t size = 0;
+            la_int64_t offset = 0;
+            while ((rc = archive_read_data_block(reader, &buffer, &size, &offset)) == ARCHIVE_OK) {
+                rc = archive_write_data_block(writer, buffer, size, offset);
+                if (rc < ARCHIVE_WARN) break;
+            }
+            if (rc == ARCHIVE_EOF) rc = ARCHIVE_OK;
+        }
+        if (rc >= ARCHIVE_WARN)
+            rc = archive_write_finish_entry(writer);
+    }
+    if (rc == ARCHIVE_EOF) rc = ARCHIVE_OK;
+    if (rc < ARCHIVE_WARN && error) {
+        const char *msg = archive_error_string(reader) ?: archive_error_string(writer);
+        *error = [NSError errorWithDomain:@"Roots" code:5 userInfo:@{NSLocalizedDescriptionKey: msg ? [NSString stringWithUTF8String:msg] : @"Extraction failed"}];
+    }
+    archive_write_free(writer);
+    archive_read_free(reader);
+    return rc >= ARCHIVE_WARN;
 }
 
 - (BOOL)importRootFromArchive:(NSURL *)archive name:(NSString *)name error:(NSError **)error progressReporter:(id<ProgressReporter> _Nullable)progress {
     NSAssert(![self.roots containsObject:name], @"root already exists: %@", name);
-    struct fakefsify_error fs_err;
+    (void)progress;
     NSURL *destination = [self rootUrl:name];
     NSURL *tempDestination = [NSFileManager.defaultManager.temporaryDirectory
                               URLByAppendingPathComponent:[NSProcessInfo.processInfo globallyUniqueString]];
     if (tempDestination == nil)
         return NO;
-    if (!fakefs_import(archive.fileSystemRepresentation,
-                       tempDestination.fileSystemRepresentation,
-                       &fs_err, (struct progress) {(__bridge void *) progress, root_progress_callback})) {
-        NSString *domain = NSPOSIXErrorDomain;
-        if (fs_err.type == ERR_SQLITE)
-            domain = @"SQLite";
-        *error = [NSError errorWithDomain:domain
-                                     code:fs_err.code
-                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                [NSString stringWithFormat:@"%s, line %d", fs_err.message, fs_err.line]}];
-        if (fs_err.type == ERR_CANCELLED)
-            *error = nil;
-        free(fs_err.message);
+    if (!ExtractArchiveToDirectory(archive.path, tempDestination.path, error)) {
         [NSFileManager.defaultManager removeItemAtURL:tempDestination error:nil];
         return NO;
     }

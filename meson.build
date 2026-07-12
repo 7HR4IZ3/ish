@@ -168,10 +168,11 @@ if get_option('kernel') == 'ish'
 
 elif get_option('kernel') == 'linux'
     kernel_src = [
-        'linux/main.c',
-        'linux/fakefs.c',
+        'linux/hostfs.c',
     ]
-    user_src = []
+    user_src = [
+        'deps/linux/fs/hostfs/hostfs_user.c',
+    ]
     emu_deps = []
 
     if get_option('engine') == 'asbestos'
@@ -186,11 +187,10 @@ elif get_option('kernel') == 'linux'
         )
     endif
 
-    modules = static_library('linux_modules', kernel_src, dependencies: [linux_headers, sqlite3])
+    modules = static_library('linux_modules', kernel_src, dependencies: linux_headers)
     user_modules = static_library('linux_user', user_src, dependencies: [user_linux_headers] + emu_deps)
     executable('ish',
         build_linux,
-        link_with: [libfakefs],
         dependencies: [
             liblinux,
             libm,

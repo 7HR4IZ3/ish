@@ -25,6 +25,7 @@ void sync_do_in_workqueue(void (^block)(void (^done)(void)));
 void actuate_kernel(const char *cmdline);
 
 void ReportPanic(const char *message);
+void ReportExecTrace(const char *event, int value);
 void ConsoleLog(const char *data, unsigned len);
 const char *DefaultRootPath(void);
 

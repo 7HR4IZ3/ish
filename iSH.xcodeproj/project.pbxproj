@@ -2171,7 +2171,6 @@
 			files = (
 				BBECF3AD269132F400DEC937 /* LinuxInterop.c in Sources */,
 				BBBF9CBD27C217B6002A30F7 /* PasteboardDeviceLinux.c in Sources */,
-				BB8C3AFF26B7B8CF00E38DDC /* fakefs.c in Sources */,
 				BBEEA9E8277D25090069495B /* LinuxRoot.c in Sources */,
 				BB123ACC26C9EFD900419CDA /* LinuxTTY.c in Sources */,
 				BBEEA9EA277DAB400069495B /* LinuxPTY.c in Sources */,
