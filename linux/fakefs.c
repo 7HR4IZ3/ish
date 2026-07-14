@@ -517,6 +517,7 @@ static const struct file_operations fakefs_file_fops = {
 static const struct file_operations fakefs_dir_fops = {
     .iterate = fakefs_iterate,
     .release = fakefs_dir_release,
+    .fsync = fakefs_fsync,
 };
 
 /***** address space *****/
@@ -736,6 +737,39 @@ static int fakefs_fill_super(struct super_block *sb, struct fs_context *fc) {
         db_rollback(&info->db);
         iput(root);
         return err;
+    }
+    db_commit(&info->db);
+
+    // Bootstrap /tmp for rootfs tarballs that omit it
+    db_begin_write(&info->db);
+    inode_t tmp_ino = path_get_inode(&info->db, "/tmp");
+    if (tmp_ino == 0) {
+        int mkerr = host_mkdirat(info->root_fd, "tmp", 0777);
+        if (mkerr < 0 && mkerr != -EEXIST) {
+            printk("fakefs: warning - failed to create /tmp: %d\n", mkerr);
+        } else {
+            struct ish_stat ishstat = {
+                .mode = S_IFDIR | 01777,
+                .uid = 0,
+                .gid = 0,
+                .rdev = 0,
+            };
+            path_create(&info->db, "/tmp", &ishstat);
+            printk("fakefs: created /tmp with mode 01777\n");
+        }
+    } else {
+        struct ish_stat ishstat;
+        if (inode_read_stat_if_exist(&info->db, tmp_ino, &ishstat)) {
+            if ((ishstat.mode & 07777) != 01777) {
+                ishstat.mode = (ishstat.mode & S_IFMT) | 01777;
+                inode_write_stat(&info->db, tmp_ino, &ishstat);
+                printk("fakefs: fixed /tmp mode to 01777 (was %05o)\n",
+                       ishstat.mode & 07777);
+            }
+        } else {
+            printk("fakefs: warning - /tmp inode %llu has no stat\n",
+                   (unsigned long long)tmp_ino);
+        }
     }
     db_commit(&info->db);
 
