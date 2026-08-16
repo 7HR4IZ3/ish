@@ -61,9 +61,15 @@
                         <outletCollection property="barButtons" destination="W9v-cj-FWz" id="OFf-FH-2Xy"/>
                         <outletCollection property="barButtons" destination="IPm-l0-f25" id="dHH-gh-Tzq"/>
                         <outletCollection property="barButtons" destination="VCr-TW-PIZ" id="NlS-hh-ara"/>
+                        <outletCollection property="barButtons" destination="p7K-2C-Xpk" id="KxL-GN-CH6"/>
+                        <outletCollection property="barButtons" destination="Whd-bM-K9T" id="6ZT-XP-YpX"/>
+                        <outletCollection property="barButtons" destination="ghL-4s-p1q" id="t5f-Yv-t0M"/>
                         <outletCollection property="barControls" destination="7qw-ie-p4d" id="fDV-Yg-Dec"/>
                         <outletCollection property="barControls" destination="hmm-tv-z35" id="EEv-5m-po5"/>
                         <outletCollection property="barControls" destination="5dl-UV-6qh" id="ocU-st-RdO"/>
+                        <outletCollection property="barControls" destination="p7K-2C-Xpk" id="66g-SC-zty"/>
+                        <outletCollection property="barControls" destination="Whd-bM-K9T" id="cjw-IQ-HUp"/>
+                        <outletCollection property="barControls" destination="ghL-4s-p1q" id="EFf-ZK-1U4"/>
                     </connections>
                 </viewController>
                 <placeholder placeholderIdentifier="IBFirstResponder" id="dkx-z0-nzr" sceneMemberID="firstResponder"/>
@@ -134,8 +140,53 @@
                                         <action selector="pressArrow:" destination="BYZ-38-t0r" eventType="valueChanged" id="SBI-0w-nSu"/>
                                     </connections>
                                 </button>
+                                <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="p7K-2C-Xpk" customClass="BarButton">
+                                    <rect key="frame" x="148" y="0.0" width="31" height="50"/>
+                                    <color key="backgroundColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                    <accessibility key="accessibilityConfiguration" label="Minus">
+                                        <accessibilityTraits key="traits" button="YES"/>
+                                    </accessibility>
+                                    <fontDescription key="fontDescription" type="system" pointSize="20"/>
+                                    <color key="tintColor" white="0.0" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                    <state key="normal" title="-">
+                                        <color key="titleColor" systemColor="darkTextColor"/>
+                                    </state>
+                                    <connections>
+                                        <action selector="pressMinus:" destination="BYZ-38-t0r" eventType="primaryActionTriggered" id="ajH-rd-UaK"/>
+                                    </connections>
+                                </button>
+                                <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="Whd-bM-K9T" customClass="BarButton">
+                                    <rect key="frame" x="185" y="0.0" width="31" height="50"/>
+                                    <color key="backgroundColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                    <accessibility key="accessibilityConfiguration" label="Slash">
+                                        <accessibilityTraits key="traits" button="YES"/>
+                                    </accessibility>
+                                    <fontDescription key="fontDescription" type="system" pointSize="20"/>
+                                    <color key="tintColor" white="0.0" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                    <state key="normal" title="/">
+                                        <color key="titleColor" systemColor="darkTextColor"/>
+                                    </state>
+                                    <connections>
+                                        <action selector="pressSlash:" destination="BYZ-38-t0r" eventType="primaryActionTriggered" id="Aoc-Wa-Rmh"/>
+                                    </connections>
+                                </button>
+                                <button opaque="NO" contentMode="scaleToFill" contentHorizontalAlignment="center" contentVerticalAlignment="center" lineBreakMode="middleTruncation" translatesAutoresizingMaskIntoConstraints="NO" id="ghL-4s-p1q" customClass="BarButton">
+                                    <rect key="frame" x="222" y="0.0" width="31" height="50"/>
+                                    <color key="backgroundColor" white="1" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                    <accessibility key="accessibilityConfiguration" label="Pipe">
+                                        <accessibilityTraits key="traits" button="YES"/>
+                                    </accessibility>
+                                    <fontDescription key="fontDescription" type="system" pointSize="20"/>
+                                    <color key="tintColor" white="0.0" alpha="1" colorSpace="custom" customColorSpace="genericGamma22GrayColorSpace"/>
+                                    <state key="normal" title="|">
+                                        <color key="titleColor" systemColor="darkTextColor"/>
+                                    </state>
+                                    <connections>
+                                        <action selector="pressPipe:" destination="BYZ-38-t0r" eventType="primaryActionTriggered" id="dwX-3r-jPJ"/>
+                                    </connections>
+                                </button>
                                 <view contentMode="scaleToFill" horizontalHuggingPriority="100" translatesAutoresizingMaskIntoConstraints="NO" id="qmg-M1-7W8" userLabel="Spacer">
-                                    <rect key="frame" x="148" y="0.0" width="229" height="50"/>
+                                    <rect key="frame" x="259" y="0.0" width="118" height="50"/>
                                 </view>
                                 <view contentMode="scaleToFill" translatesAutoresizingMaskIntoConstraints="NO" id="QqP-xI-1vv">
                                     <rect key="frame" x="383" y="0.0" width="31" height="50"/>
@@ -206,6 +257,9 @@
                                 <constraint firstItem="IPm-l0-f25" firstAttribute="width" secondItem="5dl-UV-6qh" secondAttribute="width" id="ebo-yF-ffX"/>
                                 <constraint firstItem="5dl-UV-6qh" firstAttribute="width" secondItem="VCr-TW-PIZ" secondAttribute="width" id="fXl-3w-1Zj"/>
                                 <constraint firstItem="cJt-oG-BnW" firstAttribute="width" secondItem="5dl-UV-6qh" secondAttribute="width" id="oQb-HX-lTG"/>
+                                <constraint firstItem="p7K-2C-Xpk" firstAttribute="width" secondItem="5dl-UV-6qh" secondAttribute="width" id="nQj-b7-A7T"/>
+                                <constraint firstItem="Whd-bM-K9T" firstAttribute="width" secondItem="5dl-UV-6qh" secondAttribute="width" id="5Ni-XM-YGl"/>
+                                <constraint firstItem="ghL-4s-p1q" firstAttribute="width" secondItem="5dl-UV-6qh" secondAttribute="width" id="MQj-cd-TQI"/>
                             </constraints>
                         </stackView>
                     </subviews>

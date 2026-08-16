@@ -15,12 +15,22 @@
 #import "CurrentRoot.h"
 #import "NSObject+SaneKVO.h"
 #import "LinuxInterop.h"
+#import <objc/runtime.h>
 #include "kernel/init.h"
 #include "kernel/task.h"
 #include "kernel/calls.h"
 #include "fs/devices.h"
 
-@interface TerminalViewController () <UIGestureRecognizerDelegate>
+@interface SessionRecord : NSObject
+@property (nonatomic) int pid;
+@property (nonatomic) Terminal *terminal;
+@property (nonatomic) NSString *name;
+@end
+
+@implementation SessionRecord
+@end
+
+@interface TerminalViewController () <UIGestureRecognizerDelegate, UITableViewDataSource, UITableViewDelegate>
 
 @property UITapGestureRecognizer *tapRecognizer;
 @property (weak, nonatomic) IBOutlet TerminalView *termView;
@@ -29,6 +39,7 @@
 @property (weak, nonatomic) IBOutlet UIButton *tabKey;
 @property (weak, nonatomic) IBOutlet UIButton *controlKey;
 @property (weak, nonatomic) IBOutlet UIButton *escapeKey;
+@property (weak, nonatomic) BarButton *fnKey;
 @property (strong, nonatomic) IBOutletCollection(id) NSArray *barButtons;
 @property (strong, nonatomic) IBOutletCollection(id) NSArray *barControls;
 
@@ -41,13 +52,19 @@
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barButtonWidth;
 @property (weak, nonatomic) IBOutlet NSLayoutConstraint *barHeight;
 @property (weak, nonatomic) IBOutlet UIView *settingsBadge;
+@property (nonatomic) UIScrollView *barScrollView;
 
 @property (weak, nonatomic) IBOutlet UIButton *infoButton;
 @property (weak, nonatomic) IBOutlet UIButton *pasteButton;
 @property (weak, nonatomic) IBOutlet UIButton *hideKeyboardButton;
 
-@property int sessionPid;
-@property (nonatomic) Terminal *sessionTerminal;
+@property (nonatomic) NSMutableArray<SessionRecord *> *sessions;
+@property (nonatomic) NSInteger selectedSessionIndex;
+
+@property (nonatomic) UIView *sessionsSidebar;
+@property (nonatomic) UITableView *sessionsTableView;
+@property (nonatomic) UIButton *newSessionButton;
+@property (nonatomic) NSUInteger nextSessionNumber;
 
 @property BOOL ignoreKeyboardMotion;
 @property (nonatomic) BOOL hasExternalKeyboard;
@@ -58,6 +75,12 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
+
+    self.sessions = [NSMutableArray new];
+    self.selectedSessionIndex = NSNotFound;
+    self.nextSessionNumber = 1;
+    if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad)
+        [self setupSessionsSidebar];
 
 #if !ISH_LINUX
     int bootError = [AppDelegate bootError];
@@ -100,6 +123,9 @@
     } else {
         self.barHeight.constant = 43;
     }
+
+    [self configureScrollableKeyboardExtender];
+    [self addExtraKeyboardExtenderButtons];
     
     // SF Symbols is cool
     if (@available(iOS 13, *)) {
@@ -127,6 +153,106 @@
         });
     }];
     [self _updateBadge];
+}
+
+- (void)configureScrollableKeyboardExtender {
+    if ([self.bar.superview isKindOfClass:UIScrollView.class])
+        return;
+
+    UIView *container = self.bar.superview;
+    if (container == nil)
+        return;
+
+    CGFloat leading = self.barLeading.constant;
+    CGFloat trailing = self.barTrailing.constant;
+    CGFloat top = self.barTop.constant;
+    CGFloat bottom = self.barBottom.constant;
+
+    [NSLayoutConstraint deactivateConstraints:@[self.barLeading, self.barTrailing, self.barTop, self.barBottom]];
+
+    UIScrollView *scrollView = [UIScrollView new];
+    scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    scrollView.showsHorizontalScrollIndicator = NO;
+    scrollView.showsVerticalScrollIndicator = NO;
+    scrollView.alwaysBounceHorizontal = YES;
+    scrollView.directionalLockEnabled = YES;
+    [container addSubview:scrollView];
+
+    UILayoutGuide *safeArea = container.safeAreaLayoutGuide;
+    self.barLeading = [scrollView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:leading];
+    self.barTrailing = [safeArea.trailingAnchor constraintEqualToAnchor:scrollView.trailingAnchor constant:trailing];
+    self.barTop = [scrollView.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:top];
+    self.barBottom = [safeArea.bottomAnchor constraintEqualToAnchor:scrollView.bottomAnchor constant:bottom];
+    [NSLayoutConstraint activateConstraints:@[self.barLeading, self.barTrailing, self.barTop, self.barBottom]];
+
+    [self.bar removeFromSuperview];
+    [scrollView addSubview:self.bar];
+    self.bar.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.bar.leadingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.leadingAnchor],
+        [self.bar.trailingAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.trailingAnchor],
+        [self.bar.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor],
+        [self.bar.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor],
+        [self.bar.heightAnchor constraintEqualToAnchor:scrollView.frameLayoutGuide.heightAnchor],
+    ]];
+
+    self.barScrollView = scrollView;
+}
+
+- (void)addExtraKeyboardExtenderButtons {
+    NSArray<NSDictionary<NSString *, NSString *> *> *keys = @[
+        @{@"title": @"Fn", @"action": @"fn", @"label": @"Function"},
+        @{@"title": @"PgUp", @"input": @"\x1b[5~", @"label": @"Page Up"},
+        @{@"title": @"PgDn", @"input": @"\x1b[6~", @"label": @"Page Down"},
+        @{@"title": @"Home", @"input": @"\x1b[H", @"label": @"Home"},
+        @{@"title": @"End", @"input": @"\x1b[F", @"label": @"End"},
+        @{@"title": @"Ins", @"input": @"\x1b[2~", @"label": @"Insert"},
+        @{@"title": @"Del", @"input": @"\x1b[3~", @"label": @"Delete"},
+    ];
+
+    NSInteger spacerIndex = [self.bar.arrangedSubviews indexOfObjectPassingTest:^BOOL(UIView *view, NSUInteger idx, BOOL *stop) {
+        return ![view isKindOfClass:UIControl.class];
+    }];
+    if (spacerIndex == NSNotFound)
+        spacerIndex = self.bar.arrangedSubviews.count;
+
+    NSMutableArray *barButtons = self.barButtons.mutableCopy ?: [NSMutableArray new];
+    NSMutableArray *barControls = self.barControls.mutableCopy ?: [NSMutableArray new];
+
+    for (NSDictionary<NSString *, NSString *> *entry in keys) {
+        BarButton *button = [BarButton buttonWithType:UIButtonTypeSystem];
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        button.titleLabel.font = [UIFont systemFontOfSize:20];
+        [button setTitle:entry[@"title"] forState:UIControlStateNormal];
+        button.accessibilityLabel = entry[@"label"];
+        if ([entry[@"action"] isEqualToString:@"fn"]) {
+            [button addTarget:self action:@selector(pressFn:) forControlEvents:UIControlEventTouchUpInside];
+            button.toggleable = YES;
+            self.fnKey = button;
+        } else {
+            [button addTarget:self action:@selector(pressDynamicKey:) forControlEvents:UIControlEventTouchUpInside];
+            objc_setAssociatedObject(button, @selector(pressDynamicKey:), entry[@"input"], OBJC_ASSOCIATION_COPY_NONATOMIC);
+        }
+
+        [self.bar insertArrangedSubview:button atIndex:spacerIndex++];
+        [button.widthAnchor constraintEqualToAnchor:self.infoButton.widthAnchor].active = YES;
+
+        [barButtons addObject:button];
+        [barControls addObject:button];
+    }
+
+    self.barButtons = barButtons;
+    self.barControls = barControls;
+}
+
+- (IBAction)pressDynamicKey:(UIButton *)sender {
+    NSString *key = objc_getAssociatedObject(sender, _cmd);
+    if (key != nil)
+        [self pressKey:key];
+}
+
+- (IBAction)pressFn:(BarButton *)sender {
+    sender.selected = !sender.selected;
 }
 
 - (void)awakeFromNib {
@@ -158,13 +284,60 @@
 }
 
 - (void)reconnectSessionFromTerminalUUID:(NSUUID *)uuid {
-    self.sessionTerminal = [Terminal terminalWithUUID:uuid];
-    if (self.sessionTerminal == nil)
+    if (uuid == nil) {
+        [self startNewSession];
+        return;
+    }
+    [self reconnectSessionsFromTerminalUUIDStrings:@[uuid.UUIDString] sessionPIDs:@[]];
+}
+
+- (void)reconnectSessionsFromTerminalUUIDStrings:(NSArray<NSString *> *)uuidStrings {
+    [self reconnectSessionsFromTerminalUUIDStrings:uuidStrings sessionPIDs:@[]];
+}
+
+- (void)reconnectSessionsFromTerminalUUIDStrings:(NSArray<NSString *> *)uuidStrings sessionPIDs:(NSArray<NSNumber *> *)sessionPIDs {
+    BOOL restoredAny = NO;
+    for (NSUInteger i = 0; i < uuidStrings.count; i++) {
+        NSString *uuidString = uuidStrings[i];
+        NSUUID *uuid = [[NSUUID alloc] initWithUUIDString:uuidString];
+        if (uuid == nil)
+            continue;
+        Terminal *terminal = [Terminal terminalWithUUID:uuid];
+        if (terminal == nil)
+            continue;
+
+        int pid = -1;
+        if (i < sessionPIDs.count && [sessionPIDs[i] isKindOfClass:NSNumber.class])
+            pid = sessionPIDs[i].intValue;
+        [self addSessionWithTerminal:terminal pid:pid];
+        restoredAny = YES;
+    }
+
+    if (!restoredAny)
         [self startNewSession];
 }
 
 - (NSUUID *)sessionTerminalUUID {
-    return self.terminal.uuid;
+    SessionRecord *session = [self selectedSession];
+    return session.terminal.uuid;
+}
+
+- (NSArray<NSString *> *)sessionTerminalUUIDStrings {
+    NSMutableArray<NSString *> *uuids = [NSMutableArray new];
+    for (SessionRecord *session in self.sessions) {
+        if (session.terminal.uuid != nil)
+            [uuids addObject:session.terminal.uuid.UUIDString];
+    }
+    return uuids;
+}
+
+- (NSArray<NSNumber *> *)sessionPIDs {
+    NSMutableArray<NSNumber *> *pids = [NSMutableArray new];
+    for (SessionRecord *session in self.sessions) {
+        if (session.terminal.uuid != nil)
+            [pids addObject:@(session.pid)];
+    }
+    return pids;
 }
 
 - (int)startSession {
@@ -175,26 +348,32 @@
     if (err < 0)
         return err;
     struct tty *tty;
-    self.sessionTerminal = nil;
+
     Terminal *terminal = [Terminal createPseudoTerminal:&tty];
     if (terminal == nil) {
         NSAssert(IS_ERR(tty), @"tty should be error");
         return (int) PTR_ERR(tty);
     }
-    self.sessionTerminal = terminal;
+
     NSString *stdioFile = [NSString stringWithFormat:@"/dev/pts/%d", tty->num];
     err = create_stdio(stdioFile.fileSystemRepresentation, TTY_PSEUDO_SLAVE_MAJOR, tty->num);
-    if (err < 0)
+    if (err < 0) {
+        tty_release(tty);
+        [terminal destroy];
         return err;
+    }
     tty_release(tty);
 
     char argv[4096];
     [Terminal convertCommand:command toArgs:argv limitSize:sizeof(argv)];
     const char *envp = "TERM=xterm-256color\0";
     err = do_execve(command[0].UTF8String, command.count, argv, envp);
-    if (err < 0)
+    if (err < 0) {
+        [terminal destroy];
         return err;
-    self.sessionPid = current->pid;
+    }
+    int sessionPid = current->pid;
+    [self addSessionWithTerminal:terminal pid:sessionPid];
     task_start(current);
 #else
     const char *argv_arr[command.count + 1];
@@ -222,8 +401,8 @@
     NSAssert(err <= 0, @"session start did not finish??");
     if (err < 0)
         return err;
-    self.sessionTerminal = terminal;
-    self.sessionPid = sessionPid;
+
+    [self addSessionWithTerminal:terminal pid:sessionPid];
 #endif
     return 0;
 }
@@ -231,24 +410,42 @@
 #if !ISH_LINUX
 - (void)processExited:(NSNotification *)notif {
     int pid = [notif.userInfo[@"pid"] intValue];
-    if (pid != self.sessionPid)
-        return;
-
-    [self.sessionTerminal destroy];
-    // On iOS 13, there are multiple windows, so just close this one.
-    if (@available(iOS 13, *)) {
-        // On iPhone, destroying scenes will fail, but the error doesn't actually go to the error handler, which is really stupid. Apple doesn't fix bugs, so I'm forced to just add a check here.
-        if (UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad && self.sceneSession != nil) {
-            [UIApplication.sharedApplication requestSceneSessionDestruction:self.sceneSession options:nil errorHandler:^(NSError *error) {
-                NSLog(@"scene destruction error %@", error);
-                self.sceneSession = nil;
-                [self processExited:notif];
-            }];
+    NSInteger index = [self indexOfSessionWithPid:pid];
+    if (index == NSNotFound) {
+        id terminalUUIDValue = notif.userInfo[@"terminalUUID"];
+        if (![terminalUUIDValue isKindOfClass:NSString.class] || ((NSString *) terminalUUIDValue).length == 0)
             return;
+
+        NSString *terminalUUID = (NSString *) terminalUUIDValue;
+        NSInteger unknownPidSessionIndex = NSNotFound;
+        for (NSInteger i = 0; i < self.sessions.count; i++) {
+            SessionRecord *session = self.sessions[i];
+            if (session.pid >= 0)
+                continue;
+            if (![session.terminal.uuid.UUIDString isEqualToString:terminalUUID])
+                continue;
+            if (unknownPidSessionIndex != NSNotFound)
+                return;
+            unknownPidSessionIndex = i;
         }
+        if (unknownPidSessionIndex == NSNotFound)
+            return;
+        index = unknownPidSessionIndex;
     }
-    current = NULL; // it's been freed
-    [self startNewSession];
+
+    SessionRecord *session = self.sessions[index];
+    [session.terminal destroy];
+    [self.sessions removeObjectAtIndex:index];
+    [self.sessionsTableView reloadData];
+
+    if (self.sessions.count == 0) {
+        self.selectedSessionIndex = NSNotFound;
+        current = NULL; // it's been freed
+        [self startNewSession];
+    } else {
+        NSInteger newIndex = MIN(index, (NSInteger) self.sessions.count - 1);
+        [self selectSessionAtIndex:newIndex];
+    }
 }
 #endif
 
@@ -437,6 +634,15 @@
 - (IBAction)pressTab:(id)sender {
     [self pressKey:@"\t"];
 }
+- (IBAction)pressMinus:(id)sender {
+    [self pressKey:@"-"];
+}
+- (IBAction)pressSlash:(id)sender {
+    [self pressKey:@"/"];
+}
+- (IBAction)pressPipe:(id)sender {
+    [self pressKey:@"|"];
+}
 - (void)pressKey:(NSString *)key {
     [self.termView insertText:key];
 }
@@ -446,6 +652,17 @@
 }
     
 - (IBAction)pressArrow:(ArrowBarButton *)sender {
+    if (self.fnKey.selected) {
+        switch (sender.direction) {
+            case ArrowUp: [self pressKey:@"\x1b[5~"]; break;
+            case ArrowDown: [self pressKey:@"\x1b[6~"]; break;
+            case ArrowLeft: [self pressKey:@"\x1b[H"]; break;
+            case ArrowRight: [self pressKey:@"\x1b[F"]; break;
+            case ArrowNone: break;
+        }
+        self.fnKey.selected = NO;
+        return;
+    }
     switch (sender.direction) {
         case ArrowUp: [self pressKey:[self.terminal arrow:'A']]; break;
         case ArrowDown: [self pressKey:[self.terminal arrow:'B']]; break;
@@ -457,10 +674,13 @@
 
 - (void)switchTerminal:(UIKeyCommand *)sender {
     unsigned i = (unsigned) sender.input.integerValue;
-    if (i == 7)
-        self.terminal = self.sessionTerminal;
-    else
+    if (i == 7) {
+        SessionRecord *session = [self selectedSession];
+        if (session != nil)
+            self.terminal = session.terminal;
+    } else {
         self.terminal = [Terminal terminalWithType:TTY_CONSOLE_MAJOR number:i];
+    }
 }
 
 - (void)increaseFontSize:(UIKeyCommand *)command {
@@ -516,10 +736,118 @@
     self.termView.terminal = self.terminal;
 }
 
-- (void)setSessionTerminal:(Terminal *)sessionTerminal {
-    if (_terminal == _sessionTerminal)
-        self.terminal = sessionTerminal;
-    _sessionTerminal = sessionTerminal;
+- (SessionRecord *)selectedSession {
+    if (self.selectedSessionIndex == NSNotFound || self.selectedSessionIndex >= self.sessions.count)
+        return nil;
+    return self.sessions[self.selectedSessionIndex];
+}
+
+- (NSInteger)indexOfSessionWithPid:(int)pid {
+    for (NSInteger i = 0; i < self.sessions.count; i++) {
+        if (self.sessions[i].pid == pid)
+            return i;
+    }
+    return NSNotFound;
+}
+
+- (void)addSessionWithTerminal:(Terminal *)terminal pid:(int)pid {
+    SessionRecord *session = [SessionRecord new];
+    session.terminal = terminal;
+    session.pid = pid;
+    session.name = [NSString stringWithFormat:@"Session %lu", (unsigned long) self.nextSessionNumber++];
+    [self.sessions addObject:session];
+    [self.sessionsTableView reloadData];
+    [self selectSessionAtIndex:self.sessions.count - 1];
+}
+
+- (void)selectSessionAtIndex:(NSInteger)index {
+    if (index == NSNotFound || index >= self.sessions.count)
+        return;
+    self.selectedSessionIndex = index;
+    self.terminal = self.sessions[index].terminal;
+    if (self.sessionsTableView != nil) {
+        NSIndexPath *indexPath = [NSIndexPath indexPathForRow:index inSection:0];
+        [self.sessionsTableView reloadData];
+        [self.sessionsTableView selectRowAtIndexPath:indexPath animated:YES scrollPosition:UITableViewScrollPositionNone];
+    }
+}
+
+- (void)setupSessionsSidebar {
+    UIView *sidebar = [[UIView alloc] initWithFrame:CGRectZero];
+    sidebar.translatesAutoresizingMaskIntoConstraints = NO;
+    sidebar.backgroundColor = [UIColor colorWithWhite:0.08 alpha:0.92];
+
+    UITableView *table = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStyleInsetGrouped];
+    table.translatesAutoresizingMaskIntoConstraints = NO;
+    table.dataSource = self;
+    table.delegate = self;
+    table.backgroundColor = UIColor.clearColor;
+
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button setTitle:@"New Session" forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont boldSystemFontOfSize:16];
+    [button addTarget:self action:@selector(startNewSession) forControlEvents:UIControlEventTouchUpInside];
+
+    [sidebar addSubview:table];
+    [sidebar addSubview:button];
+    [self.view addSubview:sidebar];
+
+    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [sidebar.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor],
+        [sidebar.topAnchor constraintEqualToAnchor:safeArea.topAnchor],
+        [sidebar.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor],
+        [sidebar.widthAnchor constraintEqualToConstant:220],
+
+        [button.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor constant:12],
+        [button.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor constant:-12],
+        [button.bottomAnchor constraintEqualToAnchor:sidebar.bottomAnchor constant:-12],
+        [button.heightAnchor constraintEqualToConstant:44],
+
+        [table.leadingAnchor constraintEqualToAnchor:sidebar.leadingAnchor],
+        [table.trailingAnchor constraintEqualToAnchor:sidebar.trailingAnchor],
+        [table.topAnchor constraintEqualToAnchor:sidebar.topAnchor],
+        [table.bottomAnchor constraintEqualToAnchor:button.topAnchor constant:-8],
+    ]];
+
+    self.sessionsSidebar = sidebar;
+    self.sessionsTableView = table;
+    self.newSessionButton = button;
+
+    NSLayoutConstraint *terminalLeading = nil;
+    for (NSLayoutConstraint *constraint in self.view.constraints) {
+        BOOL matches = (constraint.firstItem == self.termView && constraint.firstAttribute == NSLayoutAttributeLeading)
+            || (constraint.secondItem == self.termView && constraint.secondAttribute == NSLayoutAttributeLeading);
+        if (matches) {
+            terminalLeading = constraint;
+            break;
+        }
+    }
+    if (terminalLeading != nil)
+        terminalLeading.active = NO;
+    [self.termView.leadingAnchor constraintEqualToAnchor:sidebar.trailingAnchor].active = YES;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return self.sessions.count;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *identifier = @"SessionCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (cell == nil)
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
+
+    SessionRecord *session = self.sessions[indexPath.row];
+    cell.textLabel.text = session.name;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.textLabel.textColor = UIColor.whiteColor;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [self selectSessionAtIndex:indexPath.row];
 }
 
 @end
